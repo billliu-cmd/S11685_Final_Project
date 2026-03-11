@@ -1,4 +1,3 @@
-import math
 from __future__ import annotations
 from typing import Dict, List, Sequence, Tuple
 import numpy as np
@@ -26,13 +25,13 @@ def _macd(close: pd.Series, S: int, L: int) -> pd.Series:
     return m / m.rolling(252, min_periods=252).std().clip(lower=EPS)
 
 
-def build_panel(cfg: DataConfig | None = None) -> Tuple[pd.DataFrame, List[str], Dict[str, int]]:
+def build_panel(cfg=None) -> Tuple[pd.DataFrame, List[str], Dict[str, int]]:
     """Download ETF prices and build the full feature panel."""
     if cfg is None:
         cfg = DATA
 
     tickers = list(cfg.get("tickers", DEFAULT_TICKERS))
-    prices = yf.download(tickers, start=cfg["start"], end=cfg[end], progress=False)["Adj Close"]
+    prices = yf.download(tickers, start=cfg["start"], end=cfg["end"], progress=False)["Close"]
     if isinstance(prices, pd.Series):
         prices = prices.to_frame(tickers[0])
     prices = prices.sort_index().dropna(how="all")
@@ -144,21 +143,21 @@ def _window_collate(batch):
     }
     
 # Data Loaders
-def build_baseline_loaders(panel, feature_cols, train_d, val_d, test_d, cfg: DataConfig = None):
+def build_baseline_loaders(panel, feature_cols, train_d, val_d, test_d, cfg = None):
     if cfg is None:
         cfg = DATA
 
     sets = {
-        "train": WindowDataset(panel, feature_cols, train_d, lookback=cfg[lookback]),
-        "val":   WindowDataset(panel, feature_cols, val_d,   lookback=cfg[lookback]),
-        "test":  WindowDataset(panel, feature_cols, test_d,  lookback=cfg[lookback]),
+        "train": WindowDataset(panel, feature_cols, train_d, lookback=cfg["lookback"]),
+        "val":   WindowDataset(panel, feature_cols, val_d,   lookback=cfg["lookback"]),
+        "test":  WindowDataset(panel, feature_cols, test_d,  lookback=cfg["lookback"]),
     }
 
     loaders = {}
     loaders = {
         "train": DataLoader(
             sets["train"],
-            batch_size=cfg[batch_size],
+            batch_size=cfg["batch_size"],
             shuffle=True,
             drop_last=False,
             num_workers=4,
@@ -167,7 +166,7 @@ def build_baseline_loaders(panel, feature_cols, train_d, val_d, test_d, cfg: Dat
         ),
         "val": DataLoader(
             sets["val"],
-            batch_size=cfg[batch_size],
+            batch_size=cfg["batch_size"],
             shuffle=False,
             drop_last=False,
             num_workers=0,
@@ -176,7 +175,7 @@ def build_baseline_loaders(panel, feature_cols, train_d, val_d, test_d, cfg: Dat
         ),
         "test": DataLoader(
             sets["test"],
-            batch_size=cfg[batch_size],
+            batch_size=cfg["batch_size"],
             shuffle=False,
             drop_last=False,
             num_workers=0,
