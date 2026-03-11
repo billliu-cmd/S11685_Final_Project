@@ -3,7 +3,7 @@
 VOL_TARGET = 0.15
 VOL_LOOKBACK = 60          # EWM span for ex-ante daily vol
 RETURN_HORIZONS = (1, 21, 63, 126, 252)
-MACD_PAIRS: Tuple[Tuple[int, int], ...] = ((8, 24), (16, 28), (32, 96))
+MACD_PAIRS = ((8, 24), (16, 28), (32, 96))
 NUM_FEATURES = len(RETURN_HORIZONS) + len(MACD_PAIRS)  
 EPS = 1e-8
 
