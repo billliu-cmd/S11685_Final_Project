@@ -106,22 +106,22 @@ def eval_epoch(model, loader, device, warmup, step_fn):
 # ═══════════════════════════════════════════════════════════════════════════════
 def fit(model, train_loader, val_loader, device,
         step_fn,                         # _baseline_step or _xtrend_step
-        tcfg: None,
-        mcfg: None):
+        tcfg = None,
+        mcfg = None):
     if tcfg is None: tcfg = TRAIN
     if mcfg is None: mcfg = MODEL
-    warmup = mcfg[warmup_steps]
+    warmup = mcfg["warmup_steps"]
 
-    optim = torch.optim.Adam(model.parameters(), lr=tcfg[lr], weight_decay=tcfg[weight_decay])
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optim, T_max=tcfg[epochs])
+    optim = torch.optim.Adam(model.parameters(), lr=tcfg["lr"], weight_decay=tcfg["weight_decay"])
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optim, T_max=tcfg["epochs"])
 
     best_state = copy.deepcopy(model.state_dict())
     best_sharpe = -float("inf")
     wait = 0
     history = []
 
-    for ep in range(1, tcfg[epochs] + 1):
-        tl = train_epoch(model, train_loader, optim, device, warmup, tcfg[max_grad_norm], step_fn, scheduler)
+    for ep in range(1, tcfg["epochs"] + 1):
+        tl = train_epoch(model, train_loader, optim, device, warmup, tcfg["max_grad_norm"], step_fn, scheduler)
         vs = eval_epoch(model, val_loader, device, warmup, step_fn)
 
         cur_lr = scheduler.get_last_lr()[0]
@@ -137,7 +137,7 @@ def fit(model, train_loader, val_loader, device,
             wait = 0
         else:
             wait += 1
-            if wait >= tcfg[patience]:
+            if wait >= tcfg["patience"]:
                 print(f"Early stop at epoch {ep}")
                 break
 
