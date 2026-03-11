@@ -1,12 +1,6 @@
-import numpy as np
-import pandas as pd
-import yfinance as yf
 import math
-from typing import Dict, List, Sequence, Tuple
-
 from __future__ import annotations
 from typing import Dict, List, Sequence, Tuple
-
 import numpy as np
 import pandas as pd
 import torch
@@ -14,7 +8,7 @@ from torch.utils.data import Dataset, DataLoader
 import yfinance as yf
 
 from .config import (
-    DataConfig, VOL_TARGET, VOL_LOOKBACK,
+    DATA, VOL_TARGET, VOL_LOOKBACK,
     RETURN_HORIZONS, MACD_PAIRS, EPS, DEFAULT_TICKERS,
 )
 
@@ -35,10 +29,10 @@ def _macd(close: pd.Series, S: int, L: int) -> pd.Series:
 def build_panel(cfg: DataConfig | None = None) -> Tuple[pd.DataFrame, List[str], Dict[str, int]]:
     """Download ETF prices and build the full feature panel."""
     if cfg is None:
-        cfg = DataConfig()
+        cfg = DATA
 
-    tickers = list(cfg.tickers)
-    prices = yf.download(tickers, start=cfg.start, end=cfg.end, progress=False)["Adj Close"]
+    tickers = list(cfg.get("tickers", DEFAULT_TICKERS))
+    prices = yf.download(tickers, start=cfg["start"], end=cfg[end], progress=False)["Adj Close"]
     if isinstance(prices, pd.Series):
         prices = prices.to_frame(tickers[0])
     prices = prices.sort_index().dropna(how="all")
@@ -148,22 +142,23 @@ def _window_collate(batch):
         "date":   [b["date"]  for b in batch],
         "ticker": [b["ticker"] for b in batch],
     }
+    
 # Data Loaders
 def build_baseline_loaders(panel, feature_cols, train_d, val_d, test_d, cfg: DataConfig = None):
     if cfg is None:
-        cfg = DataConfig()
+        cfg = DATA
 
     sets = {
-        "train": WindowDataset(panel, feature_cols, train_d, lookback=cfg.lookback),
-        "val":   WindowDataset(panel, feature_cols, val_d,   lookback=cfg.lookback),
-        "test":  WindowDataset(panel, feature_cols, test_d,  lookback=cfg.lookback),
+        "train": WindowDataset(panel, feature_cols, train_d, lookback=cfg[lookback]),
+        "val":   WindowDataset(panel, feature_cols, val_d,   lookback=cfg[lookback]),
+        "test":  WindowDataset(panel, feature_cols, test_d,  lookback=cfg[lookback]),
     }
 
     loaders = {}
     loaders = {
         "train": DataLoader(
             sets["train"],
-            batch_size=cfg.batch_size,
+            batch_size=cfg[batch_size],
             shuffle=True,
             drop_last=False,
             num_workers=4,
@@ -172,7 +167,7 @@ def build_baseline_loaders(panel, feature_cols, train_d, val_d, test_d, cfg: Dat
         ),
         "val": DataLoader(
             sets["val"],
-            batch_size=cfg.batch_size,
+            batch_size=cfg[batch_size],
             shuffle=False,
             drop_last=False,
             num_workers=0,
@@ -181,7 +176,7 @@ def build_baseline_loaders(panel, feature_cols, train_d, val_d, test_d, cfg: Dat
         ),
         "test": DataLoader(
             sets["test"],
-            batch_size=cfg.batch_size,
+            batch_size=cfg[batch_size],
             shuffle=False,
             drop_last=False,
             num_workers=0,
