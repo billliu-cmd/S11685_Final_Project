@@ -126,7 +126,7 @@ class WindowDataset(Dataset):
         start = end - self.lb + 1
         return {
             "x":     frame["x"][start:end+1],                          # [T,F]
-            "y":     frame["y"][end],                                   # scalar
+            "y":     frame["y"][start:end+1],                          # scalar
             "sid":   torch.tensor(frame["asset_id"], dtype=torch.long),
             "date":  frame["dates"][end].strftime("%Y-%m-%d"),
             "ticker": tk,
