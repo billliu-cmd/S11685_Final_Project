@@ -47,6 +47,32 @@ def turnover(pred_df: pd.DataFrame) -> pd.Series:
     df["to"] = (df["position"] - df["prev_pos"]).abs()
     return df.groupby("date")["to"].mean().sort_index()
 
+def build_benchmarks(pred_df: pd.DataFrame) -> list[Dict]:
+    """
+    Build equal-weight and SPY-only benchmark results
+    using the same dates and returns from the model's pred_df.
+    """
+    df = pred_df.copy()
+    df["date"] = pd.to_datetime(df["date"])
+    tickers = df["ticker"].unique()
+    n = len(tickers)
+
+    # ── Benchmark 1: Equal-weight (1/N) ──
+    ew = df[["date", "ticker", "target_return"]].copy()
+    ew["position"] = 1.0 / n
+
+    # ── Benchmark 2: SPY buy-and-hold ──
+    spy = df[df["ticker"] == "SPY"][["date", "ticker", "target_return"]].copy()
+    spy["position"] = 1.0
+
+    benchmarks = []
+    from .config import TRAIN
+    cost = TRAIN["cost_bps"]
+
+    benchmarks.append(run_backtest(ew,  cost_bps=cost, label=f"Equal-Weight 1/{n}"))
+    benchmarks.append(run_backtest(spy, cost_bps=cost, label="SPY Buy-&-Hold"))
+
+    return benchmarks
 
 def run_backtest(pred_df: pd.DataFrame, cost_bps: float = 0.0,
                  label: str = "") -> Dict:
@@ -73,14 +99,30 @@ def run_backtest(pred_df: pd.DataFrame, cost_bps: float = 0.0,
 
 
 # ── plotting ──────────────────────────────────────────────────────────────────
-def compare_equity(results: list[Dict], title="Equity Curves"):
+def compare_equity(model_results: list[Dict],
+                   bench_results: list[Dict] = None,
+                   title="Equity Curves"):
     fig, axes = plt.subplots(2, 1, figsize=(10, 7), sharex=True)
-    for r in results:
-        axes[0].plot(r["equity_gross"], label=r["label"])
-        dd = r["equity_gross"] / r["equity_gross"].cummax() - 1
+
+    # model: solid lines
+    for r in model_results:
+        axes[0].plot(r["equity_net"], label=r["label"])
+        dd = r["equity_net"] / r["equity_net"].cummax() - 1
         axes[1].fill_between(dd.index, dd, alpha=0.3, label=r["label"])
-    axes[0].set_title(title); axes[0].legend(); axes[0].grid(alpha=.3)
-    axes[1].set_title("Drawdown"); axes[1].legend(); axes[1].grid(alpha=.3)
+
+    # benchmarks: dashed lines
+    if bench_results:
+        for r in bench_results:
+            axes[0].plot(r["equity_net"], ls="--", label=r["label"])
+            dd = r["equity_net"] / r["equity_net"].cummax() - 1
+            axes[1].fill_between(dd.index, dd, alpha=0.15, label=r["label"])
+
+    axes[0].set_title(title)
+    axes[0].legend()
+    axes[0].grid(alpha=0.3)
+    axes[1].set_title("Drawdown")
+    axes[1].legend()
+    axes[1].grid(alpha=0.3)
     fig.tight_layout()
     return fig
 
