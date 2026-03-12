@@ -4,10 +4,6 @@ Shared building blocks (paper §3.1):
   VSN           – Eq. 13   : variable selection network
   TemporalBlock – Eq. 14a-d: VSN → LSTM → skip + LayerNorm → FFN + skip
   DecoderBlock  – Eq. 19a-d: same idea but concatenates encoder output y_t
-
-All classes accept an optional `emb` argument so that a single
-nn.Embedding can be shared across every sub-component — matching the
-paper's use of one "Embedding(s)" without subscripts throughout §3.1.
 """
 
 from __future__ import annotations
