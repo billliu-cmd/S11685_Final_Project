@@ -12,7 +12,7 @@ from .config import TRAIN, MODEL
 # Loss
 # ═══════════════════════════════════════════════════════════════════════════════
 def sharpe_loss_tc(pos: torch.Tensor, ret: torch.Tensor,
-                warmup: int = 63, eps: float = 1e-9) -> torch.Tensor:
+                warmup: int = 63, cost_bps: float = 0.0, eps: float = 1e-9) -> torch.Tensor:
     """Negative annualised Sharpe with warm-up masking."""
     if warmup > 0:
         pos, ret = pos[:, warmup:], ret[:, warmup:]
@@ -52,7 +52,7 @@ def _baseline_step(model, batch, device, warmup):
     # The target_return at the endpoint of each window is replicated
     # across time-steps so the Sharpe loss operates on the full sequence.
     y_seq = y.unsqueeze(1).expand_as(pos)
-    loss = sharpe_loss_tc(pos, y_seq, warmup)
+    loss = sharpe_loss_tc(pos, y_seq, warmup, cost_bps = TRAIN["cost_bps"])
     return loss, pos, y, batch["date"], batch["ticker"]
 
 def train_epoch(model, loader, optim, device, warmup, max_gn, step_fn, scheduler=None):
