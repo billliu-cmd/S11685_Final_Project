@@ -1,17 +1,5 @@
 """
 Baseline DMN (Deep Momentum Network) — paper §3.1 / Eq. 7.
-
-This is the paper's *actual* baseline: a single TemporalBlock (VSN + LSTM +
-skip connections + per-asset embedding init) followed by tanh(Linear(·)).
-It is NOT a raw multi-layer LSTM; the paper's baseline already uses the full
-sequence representation Ξ(·,·) as the model g(·).
-
-The position is produced at every time-step so that the Sharpe loss can use
-the warm-up masking (ignore first l_s steps).
-
-A single nn.Embedding is created here and passed into TemporalBlock so that
-every sub-component (VSN, LSTM init, SideInfoFFN) shares one "Embedding(s)"
-— matching the paper's notation where no subscript distinguishes embeddings.
 """
 
 from __future__ import annotations
