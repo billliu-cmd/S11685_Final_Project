@@ -51,8 +51,8 @@ def _baseline_step(model, batch, device, warmup):
     # baseline dataset gives scalar y; expand to match warm-up slicing
     # The target_return at the endpoint of each window is replicated
     # across time-steps so the Sharpe loss operates on the full sequence.
-    y_seq = y.unsqueeze(1).expand_as(pos)
-    loss = sharpe_loss_tc(pos, y_seq, warmup, cost_bps = TRAIN["cost_bps"])
+  
+    loss = sharpe_loss_tc(pos, y, warmup, cost_bps = TRAIN["cost_bps"])
     return loss, pos, y, batch["date"], batch["ticker"]
 
 def train_epoch(model, loader, optim, device, warmup, max_gn, step_fn, scheduler=None):
