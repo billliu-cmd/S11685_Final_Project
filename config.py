@@ -49,4 +49,5 @@ TRAIN = {
     "max_grad_norm": 1.0,          # gradient clipping
     "epochs":        30,
     "patience":      10,           # early stopping patience
+    "cost_bps":      5.0,          # transaction cost parameter
 }
