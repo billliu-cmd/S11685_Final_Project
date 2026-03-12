@@ -15,16 +15,16 @@ class SideInfoFFN(nn.Module):
     def __init__(self, in_dim: int, hid: int, n_assets: int, dropout: float = 0.0, emb: nn.Embedding = None):
         super().__init__()
         self.emb = emb if emb is not None else nn.Embedding(n_assets, hid)
-        self.lin_x = nn.Linear(in_dim, hid)
-        self.lin_s = nn.Linear(hid, hid)
-        self.out   = nn.Linear(hid, hid)
+        self.lin_1 = nn.Linear(in_dim, hid)
+        self.lin_2 = nn.Linear(hid, hid)
+        self.lin_3   = nn.Linear(hid, hid)
         self.drop  = nn.Dropout(dropout)
 
     def forward(self, x: torch.Tensor, sid: torch.Tensor) -> torch.Tensor:
         e = self.emb(sid)
         if x.dim() == 3:
             e = e.unsqueeze(1)
-        return self.out(self.drop(F.elu(self.lin_x(x) + self.lin_s(e))))
+        return self.lin_3(self.drop(F.elu(self.lin_1(x) + self.lin_2(e))))
 
 
 # ── Eq. 13: per-feature FFN weighted by softmax importance ────────────────────
@@ -52,15 +52,15 @@ class VSN(nn.Module):
         return self.norm(self.drop((w.unsqueeze(-1) * parts).sum(2)))              # [B,T,H]
 
 
-# ── Eq. 14a-d: encoder temporal block ─────────────────────────────────────────
+# ── Eq. 14: encoder temporal block ─────────────────────────────────────────
 class TemporalBlock(nn.Module):
     def __init__(self, in_dim: int, hid: int, n_assets: int, dropout: float = 0.3, emb: nn.Embedding = None):
         super().__init__()
         self.emb  = emb if emb is not None else nn.Embedding(n_assets, hid)
         self.vsn  = VSN(in_dim, hid, n_assets, dropout, self.emb)
         # per-asset LSTM init  (h0, c0) = (FFN3(Emb(s)), FFN4(Emb(s)))
-        self.h0   = nn.Linear(hid, hid)
-        self.c0   = nn.Linear(hid, hid)
+        self.h0   = nn.Sequential(nn.Linear(hid, hid), nn.ELU(), nn.Linear(hid, hid))
+        self.c0   = nn.Sequential(nn.Linear(hid, hid), nn.ELU(), nn.Linear(hid, hid))
         self.lstm = nn.LSTM(hid, hid, num_layers=1, batch_first=True)
         self.norm1 = nn.LayerNorm(hid)
         self.ffn   = SideInfoFFN(hid, hid, n_assets, dropout, self.emb)
@@ -86,8 +86,8 @@ class DecoderBlock(nn.Module):
         self.fuse = nn.Sequential(nn.Linear(2 * hid, hid), nn.ELU())
         self.pre_norm = nn.LayerNorm(hid)
         # per-asset LSTM init — uses the SAME self.emb (no overwrite)
-        self.h0   = nn.Linear(hid, hid)
-        self.c0   = nn.Linear(hid, hid)
+        self.h0   = nn.Sequential(nn.Linear(hid, hid), nn.ELU(), nn.Linear(hid, hid))
+        self.c0   = nn.Sequential(nn.Linear(hid, hid), nn.ELU(), nn.Linear(hid, hid))
         self.lstm = nn.LSTM(hid, hid, num_layers=1, batch_first=True)
         self.norm1 = nn.LayerNorm(hid)
         self.ffn   = SideInfoFFN(hid, hid, n_assets, dropout, self.emb)
