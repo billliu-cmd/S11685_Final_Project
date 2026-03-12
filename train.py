@@ -11,16 +11,17 @@ from .config import TRAIN, MODEL
 # ═══════════════════════════════════════════════════════════════════════════════
 # Loss
 # ═══════════════════════════════════════════════════════════════════════════════
-def sharpe_loss(pos: torch.Tensor, ret: torch.Tensor,
+def sharpe_loss_tc(pos: torch.Tensor, ret: torch.Tensor,
                 warmup: int = 63, eps: float = 1e-9) -> torch.Tensor:
     """Negative annualised Sharpe with warm-up masking."""
     if warmup > 0:
         pos, ret = pos[:, warmup:], ret[:, warmup:]
-    final = pos * ret
-    mu = final.mean()
-    var = (final.pow(2).mean() - mu.pow(2)).clamp_min(eps)
+    raw = pos * ret
+    turnover = torch.cat([pos[:, :1].abs(),(pos[:, 1:] - pos[:, :-1]).abs()], dim=1)
+    net = raw - (cost_bps / 10_000) * turnover
+    mu = net.mean()
+    var = (net.pow(2).mean() - mu.pow(2)).clamp_min(eps)
     return -math.sqrt(252.0) * mu / var.sqrt()
-
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # Performance Metrics
