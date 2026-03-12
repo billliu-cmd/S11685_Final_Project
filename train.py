@@ -52,7 +52,7 @@ def _baseline_step(model, batch, device, warmup):
     # The target_return at the endpoint of each window is replicated
     # across time-steps so the Sharpe loss operates on the full sequence.
     y_seq = y.unsqueeze(1).expand_as(pos)
-    loss = sharpe_loss(pos, y_seq, warmup)
+    loss = sharpe_loss_tc(pos, y_seq, warmup)
     return loss, pos, y, batch["date"], batch["ticker"]
 
 def train_epoch(model, loader, optim, device, warmup, max_gn, step_fn, scheduler=None):
