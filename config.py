@@ -37,7 +37,7 @@ DATA = {
 }
 
 MODEL = {
-    "hidden_dim":   64,            # LSTM / attention hidden size
+    "hidden_dim":   128,            # LSTM / attention hidden size
     "num_heads":    4,             # attention heads in X-Trend
     "dropout":      0.1,
     "warmup_steps": 63,            # l_s : ignore first 63 predictions in Sharpe loss
