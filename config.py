@@ -51,3 +51,11 @@ TRAIN = {
     "patience":      10,           # early stopping patience
     "cost_bps":      5.0,          # transaction cost parameter
 }
+
+CPD = {
+    "lbw":    21,       # lookback window for GP fitting
+    "nu":     0.9,      # severity threshold
+    "l_min":  5,        # discard regimes shorter than this
+    "l_max":  21,       # cap regime length
+}
+
