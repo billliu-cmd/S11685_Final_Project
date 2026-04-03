@@ -2,8 +2,10 @@
 Shared building blocks (paper §3.1):
   SideInfoFFN   – Eq. 12   : fuse hidden state with asset embedding
   VSN           – Eq. 13   : variable selection network
-  TemporalBlock – Eq. 14a-d: VSN → LSTM → skip + LayerNorm → FFN + skip
-  DecoderBlock  – Eq. 19a-d: same idea but concatenates encoder output y_t
+  TemporalBlock – Eq. 14   : VSN → LSTM → skip + LayerNorm → FFN + skip
+  DecoderBlock  – Eq. 19   : same idea but concatenates encoder output y_t
+  Self-Attention - Eq. 17  : among contexts
+  Cross-Attention - Eq. 18 : targets attending contexts  
 """
 
 from __future__ import annotations
@@ -103,19 +105,29 @@ class DecoderBlock(nn.Module):
         a = self.norm1(h + x0)
         return self.norm2(self.drop(self.ffn(a, sid)) + a)
       
-# ── Eq. 15-18: cross-attention (target attends over context regimes) ─────────
+# ── self & cross-attention ─────────
+
+class SelfAttention(nn.Module):
+    def __init__(self, hid, num_heads=8, dropout=0.1):
+        super().__init__()
+        self.attn = nn.MultiheadAttention(hid, num_heads, dropout, batch_first=True)
+        self.norm = nn.LayerNorm(hid)
+
+    def forward(self, context_h):
+        """
+        context_h: [B, C, H]  — pooled context representations
+        """
+        out, _ = self.attn(query=context_h, key=context_h, value=context_h)
+        return self.norm(out + target_h)        # residual + LayerNorm
+
+
+
 class CrossAttention(nn.Module):
     def __init__(self, hid, num_heads=8, dropout=0.1):
         super().__init__()
         self.attn = nn.MultiheadAttention(hid, num_heads, dropout, batch_first=True)
         self.norm = nn.LayerNorm(hid)
 
-    def forward(self, target_h, context_h):
-        """
-        target_h:  [B, T, H]  — encoded target sequence
-        context_h: [B, C, H]  — pooled context representations
-        returns:   [B, T, H]  — target enriched with context info
-        """
-        out, _ = self.attn(query=target_h, key=context_h, value=context_h)
-        return self.norm(out + target_h)        # residual + LayerNorm
-
+    def forward(self, query, key, value):
+        out, _ = self.attn(query=query, key=key, value=value)
+        return self.norm(out + query)
