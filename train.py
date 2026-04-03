@@ -55,6 +55,22 @@ def _baseline_step(model, batch, device, warmup):
     loss = sharpe_loss_tc(pos, y, warmup, cost_bps = TRAIN["cost_bps"])
     return loss, pos, y, batch["date"], batch["ticker"]
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# X-trend Step
+# ═══════════════════════════════════════════════════════════════════════════════
+def _xtrend_step(model, batch, device, warmup):
+    target_x  = batch["target_x"].to(device)       # [B, lt, F]
+    target_y  = batch["target_y"].to(device)        # [B, lt]
+    target_id = batch["target_id"].to(device)       # [B]
+    ctx_x     = batch["ctx_x"].to(device)           # [B, C, lc, F]
+    ctx_y     = batch["ctx_y"].to(device)            # [B, C, lc]
+    ctx_id    = batch["ctx_id"].to(device)           # [B, C]
+
+    pos = model(target_x, target_id, ctx_x, ctx_y, ctx_id)   # [B, lt]
+
+    loss = sharpe_loss_tc(pos, target_y, warmup, cost_bps=TRAIN["cost_bps"])
+    return loss, pos, target_y, batch["date"], batch["ticker"]
+
 def train_epoch(model, loader, optim, device, warmup, max_gn, step_fn, scheduler=None):
     model.train()
     total_loss, n = 0.0, 0
