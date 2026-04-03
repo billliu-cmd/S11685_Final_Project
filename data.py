@@ -8,8 +8,9 @@ import yfinance as yf
 
 from .config import (
     DATA, VOL_TARGET, VOL_LOOKBACK,
-    RETURN_HORIZONS, MACD_PAIRS, EPS, DEFAULT_TICKERS,
+    RETURN_HORIZONS, MACD_PAIRS, EPS, DEFAULT_TICKERS, CPD
 )
+from .cpd import segment_series
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # 1.  Feature engineering
@@ -181,6 +182,189 @@ def build_baseline_loaders(panel, feature_cols, train_d, val_d, test_d, cfg = No
             num_workers=0,
             pin_memory=True,
             collate_fn=_window_collate,
+        ),
+    }
+
+    return sets, loaders
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 4.  X-Trend episode dataset
+# ═══════════════════════════════════════════════════════════════════════════════
+class EpisodeDataset(Dataset):
+    """
+    Each sample:
+      target  – [l_t, F] features + [l_t] returns
+      context – [C, l_c, F] features + [C, l_c] returns  (regime-aligned via CPD)
+    Training: contexts sampled freely.  Val/test: causal.
+    """
+
+    def __init__(self, panel, feature_cols, target_dates, ctx_pool_dates,
+                 regimes, target_len=126, ctx_len=21, num_ctx=10,
+                 mode="train", seed=42):
+        assert mode in ("train", "val", "test")
+        self.mode, self.seed = mode, seed
+        self.fcols = list(feature_cols)
+        self.tl, self.cl, self.nc = target_len, ctx_len, num_ctx
+
+        tgt_set = set(pd.to_datetime(target_dates))
+        ctx_set = set(pd.to_datetime(ctx_pool_dates))
+
+        self.groups = {}
+        self.targets = []
+        self.ctx_pool = []          # (ticker, regime_start, regime_end, end_date)
+
+        for tk, g in panel.groupby("ticker", sort=False):
+            g = g.sort_values("date").reset_index(drop=True)
+            rec = {
+                "x":     torch.tensor(g[self.fcols].values, dtype=torch.float32),
+                "y":     torch.tensor(g["target_return"].values, dtype=torch.float32),
+                "dates": pd.to_datetime(g["date"]).tolist(),
+                "asset_id": int(g["asset_id"].iloc[0]),
+            }
+            self.groups[tk] = rec
+
+            # targets: sliding windows (same as WindowDataset)
+            for i in range(self.tl - 1, len(g)):
+                if g["date"].iloc[i] in tgt_set:
+                    self.targets.append((tk, i))
+
+            # context pool: regime-aligned segments from CPD
+            for (rs, re) in regimes.get(tk, []):
+                if rec["dates"][re] in ctx_set:
+                    self.ctx_pool.append((tk, rs, re, rec["dates"][re]))
+
+        self.targets.sort(key=lambda s: (self.groups[s[0]]["dates"][s[1]], s[0]))
+        self.ctx_pool.sort(key=lambda s: (s[3], s[0]))
+        self._ctx_ns = np.array([pd.Timestamp(c[3]).value for c in self.ctx_pool],
+                                dtype=np.int64)
+
+    def __len__(self):
+        return len(self.targets)
+
+    def _pick_ctx(self, tgt_date, idx):
+        if self.mode == "train":
+            n = len(self.ctx_pool)
+            return np.random.choice(n, self.nc, replace=(n < self.nc))
+        cutoff = int(np.searchsorted(self._ctx_ns,
+                                     pd.Timestamp(tgt_date).value, side="left"))
+        cutoff = max(cutoff, 1)
+        rng = np.random.default_rng(self.seed + idx)
+        return rng.choice(cutoff, self.nc, replace=(cutoff < self.nc))
+
+    def _slice_ctx(self, tk, rs, re):
+        """Extract one context window, pad/truncate to l_c."""
+        cg = self.groups[tk]
+        regime_len = re - rs + 1
+        if regime_len >= self.cl:
+            # truncate: take last l_c days
+            cx = cg["x"][re - self.cl + 1:re + 1]
+            cy = cg["y"][re - self.cl + 1:re + 1]
+        else:
+            # pad: zero-pad front to l_c
+            pad = self.cl - regime_len
+            cx = torch.cat([torch.zeros(pad, cg["x"].size(1)), cg["x"][rs:re + 1]])
+            cy = torch.cat([torch.zeros(pad),                  cg["y"][rs:re + 1]])
+        return cx, cy, cg["asset_id"]
+
+    def __getitem__(self, idx):
+        tk, end = self.targets[idx]
+        g = self.groups[tk]
+        s = end - self.tl + 1
+        tgt_date = g["dates"][end]
+
+        picks = self._pick_ctx(tgt_date, idx)
+        cx, cy, cid = [], [], []
+        for p in picks.tolist():
+            ctk, rs, re, _ = self.ctx_pool[p]
+            x, y, aid = self._slice_ctx(ctk, rs, re)
+            cx.append(x)
+            cy.append(y)
+            cid.append(aid)
+
+        return {
+            "target_x":  g["x"][s:end + 1],                       # [lt, F]
+            "target_y":  g["y"][s:end + 1],                        # [lt]
+            "target_id": torch.tensor(g["asset_id"], dtype=torch.long),
+            "ctx_x":     torch.stack(cx),                          # [C, lc, F]
+            "ctx_y":     torch.stack(cy),                          # [C, lc]
+            "ctx_id":    torch.tensor(cid, dtype=torch.long),      # [C]
+            "date":      tgt_date.strftime("%Y-%m-%d"),
+            "ticker":    tk,
+        }
+
+
+def _episode_collate(batch):
+    return {
+        "target_x":  torch.stack([b["target_x"]  for b in batch]),
+        "target_y":  torch.stack([b["target_y"]  for b in batch]),
+        "target_id": torch.stack([b["target_id"] for b in batch]),
+        "ctx_x":     torch.stack([b["ctx_x"]     for b in batch]),
+        "ctx_y":     torch.stack([b["ctx_y"]     for b in batch]),
+        "ctx_id":    torch.stack([b["ctx_id"]    for b in batch]),
+        "date":      [b["date"]   for b in batch],
+        "ticker":    [b["ticker"] for b in batch],
+    }
+
+def build_episode_loaders(panel, feature_cols, train_d, val_d, test_d,
+                          regimes, cfg=None):
+    if cfg is None:
+        cfg = DATA
+
+    # context pool: train uses train dates, val/test use all dates up to their split
+    all_train_val = train_d.append(val_d) if hasattr(train_d, 'append') \
+                    else train_d.union(val_d)
+
+    sets = {
+        "train": EpisodeDataset(
+            panel, feature_cols,
+            target_dates=train_d, ctx_pool_dates=train_d,
+            regimes=regimes,
+            target_len=cfg["lookback"], ctx_len=cfg["context_len"],
+            num_ctx=cfg["num_context"], mode="train", seed=cfg["seed"],
+        ),
+        "val": EpisodeDataset(
+            panel, feature_cols,
+            target_dates=val_d, ctx_pool_dates=all_train_val,
+            regimes=regimes,
+            target_len=cfg["lookback"], ctx_len=cfg["context_len"],
+            num_ctx=cfg["num_context"], mode="val", seed=cfg["seed"],
+        ),
+        "test": EpisodeDataset(
+            panel, feature_cols,
+            target_dates=test_d, ctx_pool_dates=all_train_val.union(test_d),
+            regimes=regimes,
+            target_len=cfg["lookback"], ctx_len=cfg["context_len"],
+            num_ctx=cfg["num_context"], mode="test", seed=cfg["seed"],
+        ),
+    }
+
+    loaders = {
+        "train": DataLoader(
+            sets["train"],
+            batch_size=cfg["batch_size"],
+            shuffle=True,
+            drop_last=False,
+            num_workers=4,
+            pin_memory=True,
+            collate_fn=_episode_collate,
+        ),
+        "val": DataLoader(
+            sets["val"],
+            batch_size=cfg["batch_size"],
+            shuffle=False,
+            drop_last=False,
+            num_workers=0,
+            pin_memory=True,
+            collate_fn=_episode_collate,
+        ),
+        "test": DataLoader(
+            sets["test"],
+            batch_size=cfg["batch_size"],
+            shuffle=False,
+            drop_last=False,
+            num_workers=0,
+            pin_memory=True,
+            collate_fn=_episode_collate,
         ),
     }
 
