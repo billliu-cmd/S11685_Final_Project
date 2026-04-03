@@ -48,9 +48,15 @@ class XTrend(nn.Module):
         
     def forward(self, target_x, target_id, ctx_x, ctx_y, ctx_id):
         ctx_h = self._encode_contexts(ctx_x, ctx_id)
-        ctx_h = self.ctx_self_attn(ctx_h)
-        kv = self.ctx_ffn(ctx_h)
-        
+        k = ctx_h                                        # K: raw encoder output
+        v = self.ctx_ffn(self.ctx_self_attn(ctx_h))       # V: self-attn → FFN
+        q = self.encoder(target_x, target_id)             # Q: target encoder
+        cross_out = self.cross_attn(q, k, v)
+
+        cross_out = self.post_cross_norm(self.drop(self.post_cross_ffn(cross_out)) + cross_out)
+
+        dec_in = torch.cat([target_x, target_y.unsqueeze(-1)], dim=-1)
+        dec_out = self.decoder(dec_in, target_id, cross_out)
 
         return torch.tanh(self.head(dec_out)).squeeze(-1)
       
