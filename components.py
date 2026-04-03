@@ -87,7 +87,7 @@ class DecoderBlock(nn.Module):
         self.vsn  = VSN(in_dim, hid, n_assets, dropout, self.emb)
         self.fuse = nn.Sequential(nn.Linear(2 * hid, hid), nn.ELU())
         self.pre_norm = nn.LayerNorm(hid)
-        # per-asset LSTM init — uses the SAME self.emb (no overwrite)
+      
         self.h0   = nn.Sequential(nn.Linear(hid, hid), nn.ELU(), nn.Linear(hid, hid))
         self.c0   = nn.Sequential(nn.Linear(hid, hid), nn.ELU(), nn.Linear(hid, hid))
         self.lstm = nn.LSTM(hid, hid, num_layers=1, batch_first=True)
@@ -95,15 +95,19 @@ class DecoderBlock(nn.Module):
         self.ffn   = SideInfoFFN(hid, hid, n_assets, dropout, self.emb)
         self.norm2 = nn.LayerNorm(hid)
         self.drop  = nn.Dropout(dropout)
+      
+        self.ffn3  = nn.Sequential(nn.Linear(hid, hid), nn.ELU(), nn.Linear(hid, hid))
+        self.norm3 = nn.LayerNorm(hid)
 
     def forward(self, x: torch.Tensor, sid: torch.Tensor, enc_out: torch.Tensor):
         v = self.vsn(x, sid)                                   # [B,T,H]
-        x0 = self.pre_norm(self.fuse(torch.cat([v, enc_out], -1)))
+        f  = self.pre_norm(self.fuse(torch.cat([v, enc_out], -1)))
         e = self.emb(sid)
         h0, c0 = self.h0(e).unsqueeze(0), self.c0(e).unsqueeze(0)
-        h, _ = self.lstm(x0, (h0, c0))
+        h, _ = self.lstm(f, (h0, c0))
         a = self.norm1(h + x0)
-        return self.norm2(self.drop(self.ffn(a, sid)) + a)
+        d  = self.norm2(self.drop(self.ffn(a, sid)) + a)
+        return self.norm3(self.drop(self.ffn3(d)) + f)
       
 # ── self & cross-attention ─────────
 
