@@ -2,7 +2,7 @@
 
 import torch, torch.nn as nn
 import torch.nn.functional as F
-from .components import (TemporalBlock, DecoderBlock, ContextSelfAttention, CrossAttention, SideInfoFFN)
+from .components import (TemporalBlock, DecoderBlock, SelfAttention, CrossAttention, SideInfoFFN)
 from .config import MODEL
 
 class XTrend(nn.Module):
@@ -33,6 +33,7 @@ class XTrend(nn.Module):
         self.post_cross_norm = nn.LayerNorm(hid)
 
         # Decoder
+        self.drop = nn.Dropout(cfg["dropout"])
         self.decoder = DecoderBlock(input_dim + 1, hid, num_assets, drop, self.emb)
         
         # Final Stage
@@ -44,10 +45,11 @@ class XTrend(nn.Module):
         id_flat = ctx_id.reshape(B * C)
         h_flat  = self.encoder(x_flat, id_flat)
         h_pool  = h_flat[:, -1, :]
+        self.drop = nn.Dropout(cfg["dropout"])
         return h_pool.reshape(B, C, -1)
         
     def forward(self, target_x, target_id, ctx_x, ctx_y, ctx_id):
-        ctx_h = self._encode_contexts(ctx_x, ctx_id)
+        ctx_h = self.encode_contexts(ctx_x, ctx_id)
         k = ctx_h                                        # K: raw encoder output
         v = self.ctx_ffn(self.ctx_self_attn(ctx_h))       # V: self-attn → FFN
         q = self.encoder(target_x, target_id)             # Q: target encoder
