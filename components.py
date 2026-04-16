@@ -105,7 +105,7 @@ class DecoderBlock(nn.Module):
         e = self.emb(sid)
         h0, c0 = self.h0(e).unsqueeze(0), self.c0(e).unsqueeze(0)
         h, _ = self.lstm(f, (h0, c0))
-        a = self.norm1(h + x0)
+        a = self.norm1(h + f)
         d  = self.norm2(self.drop(self.ffn(a, sid)) + a)
         return self.norm3(self.drop(self.ffn3(d)) + f)
       
@@ -122,7 +122,7 @@ class SelfAttention(nn.Module):
         context_h: [B, C, H]  — pooled context representations
         """
         out, _ = self.attn(query=context_h, key=context_h, value=context_h)
-        return self.norm(out + target_h)        # residual + LayerNorm
+        return self.norm(out + context_h)        # residual + LayerNorm
 
 
 
