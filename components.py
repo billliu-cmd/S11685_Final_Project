@@ -96,42 +96,31 @@ class DecoderBlock(nn.Module):
         self.norm2 = nn.LayerNorm(hid)
         self.drop  = nn.Dropout(dropout)
       
-        self.ffn3  = nn.Sequential(nn.Linear(hid, hid), nn.ELU(), nn.Linear(hid, hid))
-        self.norm3 = nn.LayerNorm(hid)
 
     def forward(self, x: torch.Tensor, sid: torch.Tensor, enc_out: torch.Tensor):
-        v = self.vsn(x, sid)                                   # [B,T,H]
-        f  = self.pre_norm(self.fuse(torch.cat([v, enc_out], -1)))
+        v = self.vsn(x, sid)
+        f = self.pre_norm(self.fuse(torch.cat([v, enc_out], -1)))
         e = self.emb(sid)
         h0, c0 = self.h0(e).unsqueeze(0), self.c0(e).unsqueeze(0)
         h, _ = self.lstm(f, (h0, c0))
         a = self.norm1(h + f)
-        d  = self.norm2(self.drop(self.ffn(a, sid)) + a)
-        return self.norm3(self.drop(self.ffn3(d)) + f)
+        return self.norm2(self.drop(self.ffn(a, sid)) + a)
       
 # ── self & cross-attention ─────────
-
 class SelfAttention(nn.Module):
     def __init__(self, hid, num_heads=8, dropout=0.1):
         super().__init__()
         self.attn = nn.MultiheadAttention(hid, num_heads, dropout, batch_first=True)
-        self.norm = nn.LayerNorm(hid)
 
     def forward(self, context_h):
-        """
-        context_h: [B, C, H]  — pooled context representations
-        """
         out, _ = self.attn(query=context_h, key=context_h, value=context_h)
-        return self.norm(out + context_h)        # residual + LayerNorm
-
-
+        return out
 
 class CrossAttention(nn.Module):
     def __init__(self, hid, num_heads=8, dropout=0.1):
         super().__init__()
         self.attn = nn.MultiheadAttention(hid, num_heads, dropout, batch_first=True)
-        self.norm = nn.LayerNorm(hid)
 
     def forward(self, query, key, value):
         out, _ = self.attn(query=query, key=key, value=value)
-        return self.norm(out + query)
+        return out
