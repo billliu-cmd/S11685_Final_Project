@@ -57,5 +57,6 @@ CPD = {
     "nu":     0.9,      # severity threshold
     "l_min":  5,        # discard regimes shorter than this
     "l_max":  21,       # cap regime length
+    "recompute_every": 21,   # recompute causal CPD cache every 21 trading days
 }
 
