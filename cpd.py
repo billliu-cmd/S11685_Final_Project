@@ -108,7 +108,6 @@ def segment_series(prices, lbw=None, nu=None, l_min=None, l_max=None):
     regimes.sort()
     return regimes
 
-
 def segment_panel(panel):
     """Run CPD on every ticker. Returns {ticker: [(start, end), ...]}."""
     out = {}
@@ -116,3 +115,45 @@ def segment_panel(panel):
         g = g.sort_values("date").reset_index(drop=True)
         out[tk] = segment_series(g["close"].values)
     return out
+    
+# ═══════════════════════════════════════════════════════════════════════════════
+# Helpers for Rolling Context
+# ═══════════════════════════════════════════════════════════════════════════════
+def segment_panel_until(panel, end_date):
+    """Run CPD using only data up to and including end_date."""
+    end_date = pd.Timestamp(end_date)
+    panel_cut = panel[pd.to_datetime(panel["date"]) <= end_date].copy()
+    return segment_panel(panel_cut)
+
+
+def build_regime_cache(panel, dates, recompute_every=21):
+    """
+    Build a causal CPD cache keyed by update date so that
+    Each snapshot only uses data available up to that snapshot date.
+    """
+    dates = pd.DatetimeIndex(sorted(pd.to_datetime(dates).unique()))
+    if len(dates) == 0:
+        return {}
+
+    update_dates = list(dates[::recompute_every])
+    if update_dates[-1] != dates[-1]:
+        update_dates.append(dates[-1])
+
+    cache = {}
+    for dt in update_dates:
+        cache[pd.Timestamp(dt)] = segment_panel_until(panel, dt)
+    return cache
+
+
+def get_cached_regimes(regime_cache, target_date):
+    """Return the latest cached regime snapshot available at or before target_date."""
+    target_date = pd.Timestamp(target_date)
+    if not regime_cache:
+        return {}
+
+    keys = sorted(regime_cache)
+    key_ns = np.array([k.value for k in keys], dtype=np.int64)
+    idx = np.searchsorted(key_ns, target_date.value, side="right") - 1
+    if idx < 0:
+        return {}
+    return regime_cache[keys[idx]]
