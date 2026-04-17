@@ -10,7 +10,8 @@ from .config import (
     DATA, VOL_TARGET, VOL_LOOKBACK,
     RETURN_HORIZONS, MACD_PAIRS, EPS, DEFAULT_TICKERS, CPD
 )
-from .cpd import segment_series
+from .cpd import get_cached_regimes
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # 1.  Feature engineering
@@ -195,13 +196,26 @@ class EpisodeDataset(Dataset):
     Each sample:
       target  – [l_t, F] features + [l_t] returns
       context – [C, l_c, F] features + [C, l_c] returns  (regime-aligned via CPD)
-    Training: contexts sampled freely.  Val/test: causal.
+
+    Train:
+      - uses a single regime set built from train history only
+      - samples contexts freely from that train context pool
+
+    Val/Test:
+      - uses a causal regime cache keyed by date
+      - each target date only sees contexts available strictly before that date
     """
 
     def __init__(self, panel, feature_cols, target_dates, ctx_pool_dates,
-                 regimes, target_len=126, ctx_len=21, num_ctx=10,
+                 regimes=None, regime_cache=None,
+                 target_len=126, ctx_len=21, num_ctx=10,
                  mode="train", seed=42):
         assert mode in ("train", "val", "test")
+        if mode == "train" and regimes is None:
+            raise ValueError("EpisodeDataset(train) requires `regimes`.")
+        if mode in ("val", "test") and regime_cache is None:
+            raise ValueError(f"EpisodeDataset({mode}) requires `regime_cache`.")
+
         self.mode, self.seed = mode, seed
         self.fcols = list(feature_cols)
         self.tl, self.cl, self.nc = target_len, ctx_len, num_ctx
@@ -211,59 +225,101 @@ class EpisodeDataset(Dataset):
 
         self.groups = {}
         self.targets = []
-        self.ctx_pool = []          # (ticker, regime_start, regime_end, end_date)
+        self.ctx_pool = []
+        self.ctx_pool_by_date = {}
+        self.original_num_targets = 0
+        self.dropped_targets = 0
 
         for tk, g in panel.groupby("ticker", sort=False):
             g = g.sort_values("date").reset_index(drop=True)
             rec = {
-                "x":     torch.tensor(g[self.fcols].values, dtype=torch.float32),
-                "y":     torch.tensor(g["target_return"].values, dtype=torch.float32),
+                "x": torch.tensor(g[self.fcols].values, dtype=torch.float32),
+                "y": torch.tensor(g["target_return"].values, dtype=torch.float32),
                 "dates": pd.to_datetime(g["date"]).tolist(),
                 "asset_id": int(g["asset_id"].iloc[0]),
             }
             self.groups[tk] = rec
 
-            # targets: sliding windows (same as WindowDataset)
             for i in range(self.tl - 1, len(g)):
                 if g["date"].iloc[i] in tgt_set:
                     self.targets.append((tk, i))
 
-            # context pool: regime-aligned segments from CPD
-            for (rs, re) in regimes.get(tk, []):
-                if rec["dates"][re] in ctx_set:
-                    self.ctx_pool.append((tk, rs, re, rec["dates"][re]))
-
         self.targets.sort(key=lambda s: (self.groups[s[0]]["dates"][s[1]], s[0]))
-        self.ctx_pool.sort(key=lambda s: (s[3], s[0]))
-        self._ctx_ns = np.array([pd.Timestamp(c[3]).value for c in self.ctx_pool],
-                                dtype=np.int64)
+        self.original_num_targets = len(self.targets)
+
+        if self.mode == "train":
+            self.ctx_pool = self._build_ctx_pool(regimes, ctx_set)
+            if len(self.ctx_pool) == 0:
+                raise ValueError("Training context pool is empty. Check CPD segmentation and train dates.")
+        else:
+            unique_target_dates = sorted({self.groups[tk]["dates"][end] for tk, end in self.targets})
+
+            for tgt_date in unique_target_dates:
+                tgt_ts = pd.Timestamp(tgt_date)
+                regimes_t = get_cached_regimes(regime_cache, tgt_ts)
+                self.ctx_pool_by_date[tgt_ts] = self._build_ctx_pool(
+                    regimes_t, ctx_set, tgt_date=tgt_ts
+                )
+
+            kept_targets = []
+            for tk, end in self.targets:
+                tgt_ts = pd.Timestamp(self.groups[tk]["dates"][end])
+                if len(self.ctx_pool_by_date.get(tgt_ts, [])) > 0:
+                    kept_targets.append((tk, end))
+
+            self.targets = kept_targets
+            self.dropped_targets = self.original_num_targets - len(self.targets)
 
     def __len__(self):
         return len(self.targets)
 
-    def _pick_ctx(self, tgt_date, idx):
+    def _build_ctx_pool(self, regimes, ctx_set, tgt_date=None):
+        pool = []
+        tgt_ts = pd.Timestamp(tgt_date) if tgt_date is not None else None
+
+        for tk, intervals in regimes.items():
+            if tk not in self.groups:
+                continue
+            rec = self.groups[tk]
+
+            for rs, re in intervals:
+                end_date = pd.Timestamp(rec["dates"][re])
+                if end_date not in ctx_set:
+                    continue
+                if tgt_ts is not None and end_date >= tgt_ts:
+                    continue
+                pool.append((tk, rs, re, end_date))
+
+        pool.sort(key=lambda s: (s[3], s[0]))
+        return pool
+
+    def _pick_ctx_entries(self, tgt_date, idx):
         if self.mode == "train":
-            n = len(self.ctx_pool)
-            return np.random.choice(n, self.nc, replace=(n < self.nc))
-        cutoff = int(np.searchsorted(self._ctx_ns,
-                                     pd.Timestamp(tgt_date).value, side="left"))
-        cutoff = max(cutoff, 1)
-        rng = np.random.default_rng(self.seed + idx)
-        return rng.choice(cutoff, self.nc, replace=(cutoff < self.nc))
+            pool = self.ctx_pool
+            if len(pool) == 0:
+                raise IndexError("Training context pool is empty.")
+            picks = np.random.choice(len(pool), self.nc, replace=(len(pool) < self.nc))
+        else:
+            pool = self.ctx_pool_by_date[pd.Timestamp(tgt_date)]
+            if len(pool) == 0:
+                raise IndexError(f"No causal contexts available for target date {tgt_date}.")
+            rng = np.random.default_rng(self.seed + idx)
+            picks = rng.choice(len(pool), self.nc, replace=(len(pool) < self.nc))
+
+        picks = np.atleast_1d(picks).tolist()
+        return [pool[p] for p in picks]
 
     def _slice_ctx(self, tk, rs, re):
         """Extract one context window, pad/truncate to l_c."""
         cg = self.groups[tk]
         regime_len = re - rs + 1
         if regime_len >= self.cl:
-            # truncate: take last l_c days
             cx = cg["x"][re - self.cl + 1:re + 1]
             cy = cg["y"][re - self.cl + 1:re + 1]
         else:
-            # pad: zero-pad front to l_c
             pad = self.cl - regime_len
             cx = torch.cat([torch.zeros(pad, cg["x"].size(1)), cg["x"][rs:re + 1]])
-            cy = torch.cat([torch.zeros(pad),                  cg["y"][rs:re + 1]])
+            cy = torch.cat([torch.zeros(pad), cg["y"][rs:re + 1]])
         return cx, cy, cg["asset_id"]
 
     def __getitem__(self, idx):
@@ -272,26 +328,24 @@ class EpisodeDataset(Dataset):
         s = end - self.tl + 1
         tgt_date = g["dates"][end]
 
-        picks = self._pick_ctx(tgt_date, idx)
+        entries = self._pick_ctx_entries(tgt_date, idx)
         cx, cy, cid = [], [], []
-        for p in picks.tolist():
-            ctk, rs, re, _ = self.ctx_pool[p]
+        for ctk, rs, re, _ in entries:
             x, y, aid = self._slice_ctx(ctk, rs, re)
             cx.append(x)
             cy.append(y)
             cid.append(aid)
 
         return {
-            "target_x":  g["x"][s:end + 1],                       # [lt, F]
-            "target_y":  g["y"][s:end + 1],                        # [lt]
+            "target_x":  g["x"][s:end + 1],
+            "target_y":  g["y"][s:end + 1],
             "target_id": torch.tensor(g["asset_id"], dtype=torch.long),
-            "ctx_x":     torch.stack(cx),                          # [C, lc, F]
-            "ctx_y":     torch.stack(cy),                          # [C, lc]
-            "ctx_id":    torch.tensor(cid, dtype=torch.long),      # [C]
+            "ctx_x":     torch.stack(cx),
+            "ctx_y":     torch.stack(cy),
+            "ctx_id":    torch.tensor(cid, dtype=torch.long),
             "date":      tgt_date.strftime("%Y-%m-%d"),
             "ticker":    tk,
         }
-
 
 def _episode_collate(batch):
     return {
@@ -306,37 +360,47 @@ def _episode_collate(batch):
     }
 
 def build_episode_loaders(panel, feature_cols, train_d, val_d, test_d,
-                          regimes, cfg=None):
+                          train_regimes, cfg=None, regime_caches=None):
     if cfg is None:
         cfg = DATA
+    if regime_caches is None:
+        regime_caches = {}
 
-    # context pool: train uses train dates, val/test use all dates up to their split
-    all_train_val = train_d.append(val_d) if hasattr(train_d, 'append') \
+    all_train_val = train_d.append(val_d) if hasattr(train_d, "append") \
                     else train_d.union(val_d)
 
     sets = {
         "train": EpisodeDataset(
             panel, feature_cols,
             target_dates=train_d, ctx_pool_dates=train_d,
-            regimes=regimes,
+            regimes=train_regimes,
             target_len=cfg["lookback"], ctx_len=cfg["context_len"],
             num_ctx=cfg["num_context"], mode="train", seed=cfg["seed"],
         ),
         "val": EpisodeDataset(
             panel, feature_cols,
             target_dates=val_d, ctx_pool_dates=all_train_val,
-            regimes=regimes,
+            regime_cache=regime_caches.get("val"),
             target_len=cfg["lookback"], ctx_len=cfg["context_len"],
             num_ctx=cfg["num_context"], mode="val", seed=cfg["seed"],
         ),
         "test": EpisodeDataset(
             panel, feature_cols,
             target_dates=test_d, ctx_pool_dates=all_train_val.union(test_d),
-            regimes=regimes,
+            regime_cache=regime_caches.get("test"),
             target_len=cfg["lookback"], ctx_len=cfg["context_len"],
             num_ctx=cfg["num_context"], mode="test", seed=cfg["seed"],
         ),
     }
+
+    for split, ds in sets.items():
+        print(
+            f"{split}: kept {len(ds):,}/{ds.original_num_targets:,} targets "
+            f"({ds.dropped_targets:,} dropped for no causal contexts)"
+        )
+        if split != "train":
+            avg_pool = np.mean([len(v) for v in ds.ctx_pool_by_date.values()]) if ds.ctx_pool_by_date else 0.0
+            print(f"  avg causal context pool per target date: {avg_pool:.1f}")
 
     loaders = {
         "train": DataLoader(
