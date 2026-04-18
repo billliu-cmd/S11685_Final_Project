@@ -9,10 +9,7 @@ class XTrendCS(XTrend):
     def __init__(self, input_dim, num_assets, cfg=None):
         super().__init__(input_dim, num_assets, cfg)
         hid = self.cfg["hidden_dim"]
-
-        self.peer_encoder = TemporalBlock(
-            input_dim, hid, num_assets, self.cfg["dropout"], self.emb
-        )
+        
         self.cs_block = CrossSectionBlock(
             hid, self.cfg["num_heads"], self.cfg["dropout"]
         )
@@ -27,7 +24,7 @@ class XTrendCS(XTrend):
         B, N, T, F = peer_x.shape
         x_flat = peer_x.reshape(B * N, T, F)
         id_flat = peer_id.reshape(B * N)
-        h_flat = self.peer_encoder(x_flat, id_flat)   # [B*N, T, H]
+        h_flat = self.query_encoder(x_flat, id_flat)
         return h_flat.reshape(B, N, T, -1)
 
     def forward(self, target_x, target_id, ctx_x, ctx_y, ctx_id,
