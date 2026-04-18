@@ -9,19 +9,46 @@ EPS = 1e-8
 
 # default ETF universe
 DEFAULT_TICKERS = [
-    # US equity
-    "SPY", "QQQ", "IWM", "VTI",
-    # International equity
-    "EFA", "EEM",
-    # US sector equity
-    "XLF", "XLE", "XLK", "XLI", "XLP", "XLV",
-    # Real estate
+    # US Broad Equity
+    "SPY", "QQQ", "IWM", "VTI", "MDY",
+
+    # US Sectors
+    "XLF", "XLE", "XLK", "XLI", "XLP", "XLV", "XLB", "XLU", "XLY", "KRE",
+
+    # US Thematic
+    "XOP", "XBI",
+
+    # US Style Factors
+    "VUG", "VTV",
+
+    # Real Estate
     "VNQ",
-    # Rates / fixed income
-    "TLT", "IEF", "SHY", "LQD", "HYG",
-    # Commodities / FX
-    "GLD", "DBC", "UUP",
+
+    # International Broad
+    "EFA", "EEM",
+
+    # International Single-Country
+    "EWJ", "EWG", "EWU", "EWC", "EWA", "EWZ", "EWW", "EWT", "EWS",
+
+    # Government Bonds
+    "TLT", "IEF", "SHY",
+
+    # Credit & Aggregate
+    "AGG", "LQD", "HYG", "PFF",
+
+    # Inflation-Linked
+    "TIP",
+
+    # Commodities
+    "GLD", "SLV", "DBC", "USO", "DBA",
+
+    # Currency / FX
+    "UUP", "FXE", "FXY",
+
+    # Other / Diversifier
+    "DIA", "FXI", "SMH",
 ]
+
 
 DATA = {
     "tickers":     DEFAULT_TICKERS,
