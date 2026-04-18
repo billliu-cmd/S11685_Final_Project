@@ -135,58 +135,58 @@ class WindowDataset(Dataset):
         }
 
 
-def _window_collate(batch):
-    return {
-        "x":      torch.stack([b["x"]   for b in batch]),
-        "y":      torch.stack([b["y"]   for b in batch]),
-        "sid":    torch.stack([b["sid"]  for b in batch]),
-        "date":   [b["date"]  for b in batch],
-        "ticker": [b["ticker"] for b in batch],
-    }
+    def _window_collate(batch):
+        return {
+            "x":      torch.stack([b["x"]   for b in batch]),
+            "y":      torch.stack([b["y"]   for b in batch]),
+            "sid":    torch.stack([b["sid"]  for b in batch]),
+            "date":   [b["date"]  for b in batch],
+            "ticker": [b["ticker"] for b in batch],
+        }
     
-# Data Loaders
-def build_baseline_loaders(panel, feature_cols, train_d, val_d, test_d, cfg = None):
-    if cfg is None:
-        cfg = DATA
-
-    sets = {
-        "train": WindowDataset(panel, feature_cols, train_d, lookback=cfg["lookback"]),
-        "val":   WindowDataset(panel, feature_cols, val_d,   lookback=cfg["lookback"]),
-        "test":  WindowDataset(panel, feature_cols, test_d,  lookback=cfg["lookback"]),
-    }
-
-    loaders = {}
-    loaders = {
-        "train": DataLoader(
-            sets["train"],
-            batch_size=cfg["batch_size"],
-            shuffle=True,
-            drop_last=False,
-            num_workers=4,
-            pin_memory=True,
-            collate_fn=_window_collate,
-        ),
-        "val": DataLoader(
-            sets["val"],
-            batch_size=cfg["batch_size"],
-            shuffle=False,
-            drop_last=False,
-            num_workers=0,
-            pin_memory=True,
-            collate_fn=_window_collate,
-        ),
-        "test": DataLoader(
-            sets["test"],
-            batch_size=cfg["batch_size"],
-            shuffle=False,
-            drop_last=False,
-            num_workers=0,
-            pin_memory=True,
-            collate_fn=_window_collate,
-        ),
-    }
-
-    return sets, loaders
+    # Data Loaders
+    def build_baseline_loaders(panel, feature_cols, train_d, val_d, test_d, cfg = None):
+        if cfg is None:
+            cfg = DATA
+    
+        sets = {
+            "train": WindowDataset(panel, feature_cols, train_d, lookback=cfg["lookback"]),
+            "val":   WindowDataset(panel, feature_cols, val_d,   lookback=cfg["lookback"]),
+            "test":  WindowDataset(panel, feature_cols, test_d,  lookback=cfg["lookback"]),
+        }
+    
+        loaders = {}
+        loaders = {
+            "train": DataLoader(
+                sets["train"],
+                batch_size=cfg["batch_size"],
+                shuffle=True,
+                drop_last=False,
+                num_workers=4,
+                pin_memory=True,
+                collate_fn=_window_collate,
+            ),
+            "val": DataLoader(
+                sets["val"],
+                batch_size=cfg["batch_size"],
+                shuffle=False,
+                drop_last=False,
+                num_workers=0,
+                pin_memory=True,
+                collate_fn=_window_collate,
+            ),
+            "test": DataLoader(
+                sets["test"],
+                batch_size=cfg["batch_size"],
+                shuffle=False,
+                drop_last=False,
+                num_workers=0,
+                pin_memory=True,
+                collate_fn=_window_collate,
+            ),
+        }
+    
+        return sets, loaders
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # 4.  X-Trend episode dataset
@@ -209,7 +209,8 @@ class EpisodeDataset(Dataset):
     def __init__(self, panel, feature_cols, target_dates, ctx_pool_dates,
                  regimes=None, regime_cache=None,
                  target_len=126, ctx_len=21, num_ctx=10,
-                 mode="train", seed=42):
+                 mode="train", seed=42,
+                 include_peers=False, max_peers=None):
         assert mode in ("train", "val", "test")
         if mode == "train" and regimes is None:
             raise ValueError("EpisodeDataset(train) requires `regimes`.")
@@ -219,6 +220,14 @@ class EpisodeDataset(Dataset):
         self.mode, self.seed = mode, seed
         self.fcols = list(feature_cols)
         self.tl, self.cl, self.nc = target_len, ctx_len, num_ctx
+
+        # Cross-sectional Peers Setup
+        self.include_peers = include_peers
+        self.max_peers = max_peers
+        self.num_assets = len(panel["ticker"].unique())
+        self.n_peer_slots = max(max_peers if max_peers is not None else self.num_assets - 1, 1)
+        self.all_window_targets = []
+        self.peer_targets_by_date = {}
 
         tgt_set = set(pd.to_datetime(target_dates))
         ctx_set = set(pd.to_datetime(ctx_pool_dates))
@@ -246,6 +255,16 @@ class EpisodeDataset(Dataset):
 
         self.targets.sort(key=lambda s: (self.groups[s[0]]["dates"][s[1]], s[0]))
         self.original_num_targets = len(self.targets)
+
+        self.all_window_targets = list(self.targets)
+                     
+        # Cross-Sectional Peers
+        if self.include_peers:
+            for tk, end in self.all_window_targets:
+                tgt_ts = pd.Timestamp(self.groups[tk]["dates"][end])
+                self.peer_targets_by_date.setdefault(tgt_ts, []).append((tk, end))
+            for tgt_ts in self.peer_targets_by_date:
+                self.peer_targets_by_date[tgt_ts].sort(key=lambda z: z[0])
 
         if self.mode == "train":
             self.ctx_pool = self._build_ctx_pool(regimes, ctx_set)
@@ -322,6 +341,44 @@ class EpisodeDataset(Dataset):
             cy = torch.cat([torch.zeros(pad), cg["y"][rs:re + 1]])
         return cx, cy, cg["asset_id"]
 
+    def _get_peer_entries(self, target_tk, tgt_date, idx):
+        peers = []
+        for ptk, pend in self.peer_targets_by_date.get(pd.Timestamp(tgt_date), []):
+            if ptk == target_tk:
+                continue
+            peers.append((ptk, pend, self.groups[ptk]["asset_id"]))
+    
+        if self.max_peers is not None and len(peers) > self.max_peers:
+            if self.mode == "train":
+                picks = np.random.choice(len(peers), self.max_peers, replace=False)
+                picks = sorted(np.atleast_1d(picks).tolist())
+                peers = [peers[i] for i in picks]
+            else:
+                peers = peers[:self.max_peers]
+    
+        return peers
+
+    def _slice_peer_window(self, tk, end):
+        g = self.groups[tk]
+        s = end - self.tl + 1
+        return g["x"][s:end + 1], g["asset_id"]
+
+
+    def _pack_peers(self, peer_entries):
+        F = len(self.fcols)
+        peer_x = torch.zeros(self.n_peer_slots, self.tl, F)
+        peer_id = torch.zeros(self.n_peer_slots, dtype=torch.long)
+        peer_mask = torch.zeros(self.n_peer_slots, dtype=torch.bool)
+    
+        for j, (ptk, pend, paid) in enumerate(peer_entries[:self.n_peer_slots]):
+            x, aid = self._slice_peer_window(ptk, pend)
+            peer_x[j] = x
+            peer_id[j] = aid
+            peer_mask[j] = True
+    
+        return peer_x, peer_id, peer_mask
+    
+
     def __getitem__(self, idx):
         tk, end = self.targets[idx]
         g = self.groups[tk]
@@ -336,7 +393,7 @@ class EpisodeDataset(Dataset):
             cy.append(y)
             cid.append(aid)
 
-        return {
+        item = {
             "target_x":  g["x"][s:end + 1],
             "target_y":  g["y"][s:end + 1],
             "target_id": torch.tensor(g["asset_id"], dtype=torch.long),
@@ -346,90 +403,110 @@ class EpisodeDataset(Dataset):
             "date":      tgt_date.strftime("%Y-%m-%d"),
             "ticker":    tk,
         }
+        
+        if self.include_peers:
+            peer_entries = self._get_peer_entries(tk, tgt_date, idx)
+            peer_x, peer_id, peer_mask = self._pack_peers(peer_entries)
+            item["peer_x"] = peer_x
+            item["peer_id"] = peer_id
+            item["peer_mask"] = peer_mask
+        
+        return item
 
-def _episode_collate(batch):
-    return {
-        "target_x":  torch.stack([b["target_x"]  for b in batch]),
-        "target_y":  torch.stack([b["target_y"]  for b in batch]),
-        "target_id": torch.stack([b["target_id"] for b in batch]),
-        "ctx_x":     torch.stack([b["ctx_x"]     for b in batch]),
-        "ctx_y":     torch.stack([b["ctx_y"]     for b in batch]),
-        "ctx_id":    torch.stack([b["ctx_id"]    for b in batch]),
-        "date":      [b["date"]   for b in batch],
-        "ticker":    [b["ticker"] for b in batch],
-    }
+    def _episode_collate(batch):
+        out = {
+            "target_x":  torch.stack([b["target_x"]  for b in batch]),
+            "target_y":  torch.stack([b["target_y"]  for b in batch]),
+            "target_id": torch.stack([b["target_id"] for b in batch]),
+            "ctx_x":     torch.stack([b["ctx_x"]     for b in batch]),
+            "ctx_y":     torch.stack([b["ctx_y"]     for b in batch]),
+            "ctx_id":    torch.stack([b["ctx_id"]    for b in batch]),
+            "date":      [b["date"]   for b in batch],
+            "ticker":    [b["ticker"] for b in batch],
+        }
+    
+        if "peer_x" in batch[0]:
+            out["peer_x"] = torch.stack([b["peer_x"] for b in batch])
+            out["peer_id"] = torch.stack([b["peer_id"] for b in batch])
+            out["peer_mask"] = torch.stack([b["peer_mask"] for b in batch])
+    
+        return out
 
-def build_episode_loaders(panel, feature_cols, train_d, val_d, test_d,
-                          train_regimes, cfg=None, regime_caches=None):
-    if cfg is None:
-        cfg = DATA
-    if regime_caches is None:
-        regime_caches = {}
-
-    all_train_val = train_d.append(val_d) if hasattr(train_d, "append") \
-                    else train_d.union(val_d)
-
-    sets = {
-        "train": EpisodeDataset(
-            panel, feature_cols,
-            target_dates=train_d, ctx_pool_dates=train_d,
-            regimes=train_regimes,
-            target_len=cfg["lookback"], ctx_len=cfg["context_len"],
-            num_ctx=cfg["num_context"], mode="train", seed=cfg["seed"],
-        ),
-        "val": EpisodeDataset(
-            panel, feature_cols,
-            target_dates=val_d, ctx_pool_dates=all_train_val,
-            regime_cache=regime_caches.get("val"),
-            target_len=cfg["lookback"], ctx_len=cfg["context_len"],
-            num_ctx=cfg["num_context"], mode="val", seed=cfg["seed"],
-        ),
-        "test": EpisodeDataset(
-            panel, feature_cols,
-            target_dates=test_d, ctx_pool_dates=all_train_val.union(test_d),
-            regime_cache=regime_caches.get("test"),
-            target_len=cfg["lookback"], ctx_len=cfg["context_len"],
-            num_ctx=cfg["num_context"], mode="test", seed=cfg["seed"],
-        ),
-    }
-
-    for split, ds in sets.items():
-        print(
-            f"{split}: kept {len(ds):,}/{ds.original_num_targets:,} targets "
-            f"({ds.dropped_targets:,} dropped for no causal contexts)"
-        )
-        if split != "train":
-            avg_pool = np.mean([len(v) for v in ds.ctx_pool_by_date.values()]) if ds.ctx_pool_by_date else 0.0
-            print(f"  avg causal context pool per target date: {avg_pool:.1f}")
-
-    loaders = {
-        "train": DataLoader(
-            sets["train"],
-            batch_size=cfg["batch_size"],
-            shuffle=True,
-            drop_last=False,
-            num_workers=4,
-            pin_memory=True,
-            collate_fn=_episode_collate,
-        ),
-        "val": DataLoader(
-            sets["val"],
-            batch_size=cfg["batch_size"],
-            shuffle=False,
-            drop_last=False,
-            num_workers=0,
-            pin_memory=True,
-            collate_fn=_episode_collate,
-        ),
-        "test": DataLoader(
-            sets["test"],
-            batch_size=cfg["batch_size"],
-            shuffle=False,
-            drop_last=False,
-            num_workers=0,
-            pin_memory=True,
-            collate_fn=_episode_collate,
-        ),
-    }
-
-    return sets, loaders
+    def build_episode_loaders(panel, feature_cols, train_d, val_d, test_d,
+                              train_regimes, cfg=None, regime_caches=None,
+                              include_peers=False, max_peers=None):
+        if cfg is None:
+            cfg = DATA
+        if regime_caches is None:
+            regime_caches = {}
+    
+        all_train_val = train_d.append(val_d) if hasattr(train_d, "append") \
+                        else train_d.union(val_d)
+    
+        sets = {
+            "train": EpisodeDataset(
+                panel, feature_cols,
+                target_dates=train_d, ctx_pool_dates=train_d,
+                regimes=train_regimes,
+                target_len=cfg["lookback"], ctx_len=cfg["context_len"],
+                num_ctx=cfg["num_context"], mode="train", seed=cfg["seed"], include_peers=include_peers,
+                max_peers=max_peers,
+            ),
+            "val": EpisodeDataset(
+                panel, feature_cols,
+                target_dates=val_d, ctx_pool_dates=all_train_val,
+                regime_cache=regime_caches.get("val"),
+                target_len=cfg["lookback"], ctx_len=cfg["context_len"],
+                num_ctx=cfg["num_context"], mode="val", seed=cfg["seed"], include_peers=include_peers,
+                max_peers=max_peers,
+            ),
+            "test": EpisodeDataset(
+                panel, feature_cols,
+                target_dates=test_d, ctx_pool_dates=all_train_val.union(test_d),
+                regime_cache=regime_caches.get("test"),
+                target_len=cfg["lookback"], ctx_len=cfg["context_len"],
+                num_ctx=cfg["num_context"], mode="test", seed=cfg["seed"], include_peers=include_peers,
+                max_peers=max_peers,
+            ),
+        }
+    
+        for split, ds in sets.items():
+            print(
+                f"{split}: kept {len(ds):,}/{ds.original_num_targets:,} targets "
+                f"({ds.dropped_targets:,} dropped for no causal contexts)"
+            )
+            if split != "train":
+                avg_pool = np.mean([len(v) for v in ds.ctx_pool_by_date.values()]) if ds.ctx_pool_by_date else 0.0
+                print(f"  avg causal context pool per target date: {avg_pool:.1f}")
+    
+        loaders = {
+            "train": DataLoader(
+                sets["train"],
+                batch_size=cfg["batch_size"],
+                shuffle=True,
+                drop_last=False,
+                num_workers=4,
+                pin_memory=True,
+                collate_fn=_episode_collate,
+            ),
+            "val": DataLoader(
+                sets["val"],
+                batch_size=cfg["batch_size"],
+                shuffle=False,
+                drop_last=False,
+                num_workers=0,
+                pin_memory=True,
+                collate_fn=_episode_collate,
+            ),
+            "test": DataLoader(
+                sets["test"],
+                batch_size=cfg["batch_size"],
+                shuffle=False,
+                drop_last=False,
+                num_workers=0,
+                pin_memory=True,
+                collate_fn=_episode_collate,
+            ),
+        }
+    
+        return sets, loaders
