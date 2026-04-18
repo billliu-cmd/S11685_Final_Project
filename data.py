@@ -349,7 +349,8 @@ class EpisodeDataset(Dataset):
     
         if self.max_peers is not None and len(peers) > self.max_peers:
             if self.mode == "train":
-                picks = np.random.choice(len(peers), self.max_peers, replace=False)
+                rng = np.random.default_rng(self.seed + idx * 7919 + 1)
+                picks = rng.choice(len(peers), self.max_peers, replace=False)
                 picks = sorted(np.atleast_1d(picks).tolist())
                 peers = [peers[i] for i in picks]
             else:
