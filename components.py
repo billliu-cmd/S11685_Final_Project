@@ -5,7 +5,8 @@ Shared building blocks (paper §3.1):
   TemporalBlock – Eq. 14   : VSN → LSTM → skip + LayerNorm → FFN + skip
   DecoderBlock  – Eq. 19   : same idea but concatenates encoder output y_t
   Self-Attention - Eq. 17  : among contexts
-  Cross-Attention - Eq. 18 : targets attending contexts  
+  Cross-Attention - Eq. 18 : targets attending contexts
+  Cross-Section : inspired by structure in https://arxiv.org/pdf/2105.10019
 """
 
 from __future__ import annotations
@@ -124,3 +125,53 @@ class CrossAttention(nn.Module):
     def forward(self, query, key, value):
         out, _ = self.attn(query=query, key=key, value=value)
         return out
+
+# Cross-Section Block (Self-Attention + Cross-Attention)
+class CrossSectionBlock(nn.Module):
+    """
+      1. self-attend across peer assets
+      2. let the target state attend to the peer set
+    """
+    def __init__(self, hid, num_heads=4, dropout=0.1):
+        super().__init__()
+        self.peer_self_attn = nn.MultiheadAttention(hid, num_heads, dropout, batch_first=True)
+        self.peer_attn_norm = nn.LayerNorm(hid)
+        self.peer_ffn = nn.Sequential(nn.Linear(hid, hid), nn.ELU(), nn.Linear(hid, hid))
+        self.peer_ffn_norm = nn.LayerNorm(hid)
+
+        self.target_cross_attn = nn.MultiheadAttention(hid, num_heads, dropout, batch_first=True)
+        self.cross_attn_norm = nn.LayerNorm(hid)
+        self.cross_ffn = nn.Sequential(nn.Linear(hid, hid), nn.ELU(), nn.Linear(hid, hid))
+        self.cross_ffn_norm = nn.LayerNorm(hid)
+
+        self.drop = nn.Dropout(dropout)
+
+    def forward(self, target_h, peer_h, peer_mask=None):
+        # target_h: [B, T, H]
+        # peer_h:   [B, N, T, H]
+        B, N, T, H = peer_h.shape
+
+        # Attend across assets at each fixed time step.
+        peer_tokens = peer_h.permute(0, 2, 1, 3).reshape(B * T, N, H)
+
+        key_padding_mask = None
+        if peer_mask is not None:
+            key_padding_mask = ~peer_mask[:, None, :].expand(B, T, N).reshape(B * T, N)
+
+        peer_attn, _ = self.peer_self_attn(
+            peer_tokens, peer_tokens, peer_tokens,
+            key_padding_mask=key_padding_mask
+        )
+        peer_ctx = self.peer_attn_norm(peer_tokens + self.drop(peer_attn))
+        peer_ctx = self.peer_ffn_norm(peer_ctx + self.drop(self.peer_ffn(peer_ctx)))
+
+        q = target_h.reshape(B * T, 1, H)
+        cross_out, _ = self.target_cross_attn(
+            q, peer_ctx, peer_ctx,
+            key_padding_mask=key_padding_mask
+        )
+        cross_ctx = self.cross_attn_norm(q + self.drop(cross_out))
+        cross_ctx = self.cross_ffn_norm(cross_ctx + self.drop(self.cross_ffn(cross_ctx)))
+
+        return cross_ctx.reshape(B, T, H)
+
