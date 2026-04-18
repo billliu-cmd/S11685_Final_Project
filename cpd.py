@@ -4,13 +4,17 @@ Segments each asset's price series into stationary regimes
 that serve as the context pool for episodic training.
 """
 from __future__ import annotations
+import hashlib
+import os
+import pickle
+from concurrent.futures import ProcessPoolExecutor
+from pathlib import Path
+
 import numpy as np
 from scipy.optimize import minimize
 import pandas as pd
 
 from .config import CPD
-
-
 # ═══════════════════════════════════════════════════════════════════════════════
 # GP primitives
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -108,25 +112,83 @@ def segment_series(prices, lbw=None, nu=None, l_min=None, l_max=None):
     regimes.sort()
     return regimes
 
-def segment_panel(panel):
+def _resolve_n_jobs(n_jobs):
+    if n_jobs is None:
+        n_jobs = os.environ.get("CPD_N_JOBS", "1")
+    if n_jobs == -1:
+        n_jobs = os.cpu_count() or 1
+    n_jobs = int(n_jobs)
+    return max(1, min(n_jobs, os.cpu_count() or 1))
+
+
+def _segment_one_group(group):
+    tk, prices = group
+    return tk, segment_series(prices)
+
+
+def segment_panel(panel, n_jobs=1, verbose=0):
     """Run CPD on every ticker. Returns {ticker: [(start, end), ...]}."""
-    out = {}
-    for tk, g in panel.groupby("ticker", sort=False):
-        g = g.sort_values("date").reset_index(drop=True)
-        out[tk] = segment_series(g["close"].values)
-    return out
+    groups = [
+        (tk, g.sort_values("date").reset_index(drop=True)["close"].values)
+        for tk, g in panel.groupby("ticker", sort=False)
+    ]
+    n_jobs = _resolve_n_jobs(n_jobs)
+
+    if verbose:
+        print(f"Running CPD across {len(groups)} tickers with {n_jobs} worker(s) ...")
+
+    if n_jobs == 1 or len(groups) <= 1:
+        return {tk: segment_series(prices) for tk, prices in groups}
+
+    with ProcessPoolExecutor(max_workers=min(n_jobs, len(groups))) as pool:
+        return dict(pool.map(_segment_one_group, groups))
+
+
+def _cache_dir(cache_dir=None):
+    root = cache_dir or os.environ.get("CPD_CACHE_DIR", "./cpd_cache")
+    path = Path(root)
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _panel_cache_key(panel, extra=""):
+    digest = pd.util.hash_pandas_object(
+        panel[["ticker", "date", "close"]], index=False
+    ).values.tobytes()
+    payload = digest + repr(sorted(CPD.items())).encode() + extra.encode()
+    return hashlib.md5(payload).hexdigest()[:16]
+
+
+def segment_panel_cached(panel, cache_dir=None, n_jobs=1, algo_version="v2", verbose=1):
+    """Run CPD once and cache the regimes to disk for reuse across notebook runs."""
+    cache_root = _cache_dir(cache_dir)
+    cache_key = _panel_cache_key(panel, extra=f"segment_panel:{algo_version}")
+    cache_path = cache_root / f"regimes_{cache_key}.pkl"
+
+    if cache_path.exists():
+        if verbose:
+            print(f"Loading cached train regimes from {cache_path}")
+        with open(cache_path, "rb") as f:
+            return pickle.load(f)
+
+    regimes = segment_panel(panel, n_jobs=n_jobs, verbose=verbose)
+    with open(cache_path, "wb") as f:
+        pickle.dump(regimes, f)
+    if verbose:
+        print(f"Cached train regimes to {cache_path}")
+    return regimes
+
     
 # ═══════════════════════════════════════════════════════════════════════════════
 # Helpers for Rolling Context
 # ═══════════════════════════════════════════════════════════════════════════════
-def segment_panel_until(panel, end_date):
+def segment_panel_until(panel, end_date, n_jobs=1, verbose=0):
     """Run CPD using only data up to and including end_date."""
     end_date = pd.Timestamp(end_date)
     panel_cut = panel[pd.to_datetime(panel["date"]) <= end_date].copy()
-    return segment_panel(panel_cut)
+    return segment_panel(panel_cut, n_jobs=n_jobs, verbose=verbose)
 
-
-def build_regime_cache(panel, dates, recompute_every=21):
+def build_regime_cache(panel, dates, recompute_every=21, n_jobs=1, verbose=0):
     """
     Build a causal CPD cache keyed by update date so that
     Each snapshot only uses data available up to that snapshot date.
@@ -140,10 +202,44 @@ def build_regime_cache(panel, dates, recompute_every=21):
         update_dates.append(dates[-1])
 
     cache = {}
-    for dt in update_dates:
-        cache[pd.Timestamp(dt)] = segment_panel_until(panel, dt)
+    total = len(update_dates)
+    for idx, dt in enumerate(update_dates, start=1):
+        if verbose:
+            print(f"CPD snapshot {idx}/{total}: {pd.Timestamp(dt).date()}")
+        cache[pd.Timestamp(dt)] = segment_panel_until(panel, dt, n_jobs=n_jobs, verbose=0)
     return cache
 
+
+def build_regime_cache_cached(panel, dates, recompute_every=21, cache_dir=None,
+                              n_jobs=1, algo_version="v2", verbose=1):
+    """Build a causal CPD cache once and persist it for reuse."""
+    dates = pd.DatetimeIndex(sorted(pd.to_datetime(dates).unique()))
+    cache_root = _cache_dir(cache_dir)
+    extra = (
+        f"regime_cache:{algo_version}:{recompute_every}:"
+        + ",".join(pd.Timestamp(dt).strftime("%Y-%m-%d") for dt in dates)
+    )
+    cache_key = _panel_cache_key(panel, extra=extra)
+    cache_path = cache_root / f"regime_cache_{cache_key}.pkl"
+
+    if cache_path.exists():
+        if verbose:
+            print(f"Loading cached regime snapshots from {cache_path}")
+        with open(cache_path, "rb") as f:
+            return pickle.load(f)
+
+    regime_cache = build_regime_cache(
+        panel,
+        dates,
+        recompute_every=recompute_every,
+        n_jobs=n_jobs,
+        verbose=verbose,
+    )
+    with open(cache_path, "wb") as f:
+        pickle.dump(regime_cache, f)
+    if verbose:
+        print(f"Cached regime snapshots to {cache_path}")
+    return regime_cache
 
 def get_cached_regimes(regime_cache, target_date):
     """Return the latest cached regime snapshot available at or before target_date."""
