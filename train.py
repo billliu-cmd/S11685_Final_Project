@@ -71,6 +71,25 @@ def _xtrend_step(model, batch, device, warmup):
     loss = sharpe_loss_tc(pos, target_y, warmup, cost_bps=TRAIN["cost_bps"])
     return loss, pos, target_y, batch["date"], batch["ticker"]
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# X-trend + Cross-Section Step
+# ═══════════════════════════════════════════════════════════════════════════════
+def _xtrend_cs_step(model, batch, device, warmup):
+    target_x  = batch["target_x"].to(device)
+    target_y  = batch["target_y"].to(device)
+    target_id = batch["target_id"].to(device)
+    ctx_x     = batch["ctx_x"].to(device)
+    ctx_y     = batch["ctx_y"].to(device)
+    ctx_id    = batch["ctx_id"].to(device)
+
+    peer_x    = batch["peer_x"].to(device)
+    peer_id   = batch["peer_id"].to(device)
+    peer_mask = batch["peer_mask"].to(device)
+
+    pos = model(target_x, target_id, ctx_x, ctx_y, ctx_id, peer_x, peer_id, peer_mask)
+    loss = sharpe_loss_tc(pos, target_y, warmup, cost_bps=TRAIN["cost_bps"])
+    return loss, pos, target_y, batch["date"], batch["ticker"]
+
 def train_epoch(model, loader, optim, device, warmup, max_gn, step_fn, scheduler=None):
     model.train()
     total_loss, n = 0.0, 0
