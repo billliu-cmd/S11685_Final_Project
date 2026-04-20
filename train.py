@@ -68,7 +68,7 @@ def _baseline_step(model, batch, device, warmup, cost_bps=None):
     # The target_return at the endpoint of each window is replicated
     # across time-steps so the Sharpe loss operates on the full sequence.
   
-    loss = sharpe_loss_tc(pos, target_y, warmup, cost_bps=cost_bps)
+    loss = sharpe_loss_tc(pos, y, warmup, cost_bps=cost_bps)
     return loss, pos, y, batch["date"], batch["ticker"]
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -220,7 +220,7 @@ def fit(model, train_loader, val_loader, device,
           f"to {vs['avg_turnover']:.4f} | lr {cur_lr:.2e}"
       )
 
-      if vs["net_sharpe"] > best_sharpe + 1e-4::
+      if vs["net_sharpe"] > best_sharpe + 1e-4:
           best_sharpe = vs["net_sharpe"]
           best_state = copy.deepcopy(model.state_dict())
           wait = 0
