@@ -39,10 +39,26 @@ def max_drawdown(daily: pd.Series) -> float:
     eq = (1 + daily.fillna(0)).cumprod()
     return float((eq / eq.cummax() - 1).min())
 
+def _daily_results_from_pred_df(pred_df: pd.DataFrame, cost_bps: float):
+    df = pred_df.copy()
+    df["date"] = pd.to_datetime(df["date"])
+    df = df.sort_values(["ticker", "date"])
+
+    df["strategy_return"] = df["position"] * df["target_return"]
+    df["prev_pos"] = df.groupby("ticker")["position"].shift(1).fillna(0.0)
+    df["turnover"] = (df["position"] - df["prev_pos"]).abs()
+
+    daily_gross = df.groupby("date")["strategy_return"].mean().sort_index()
+    daily_turnover = df.groupby("date")["turnover"].mean().sort_index()
+    daily_net = daily_gross - (cost_bps / 10_000.0) * daily_turnover
+
+    return df, daily_gross, daily_net, daily_turnover
 # ═══════════════════════════════════════════════════════════════════════════════
 # Baseline Step
 # ═══════════════════════════════════════════════════════════════════════════════
-def _baseline_step(model, batch, device, warmup):
+def _baseline_step(model, batch, device, warmup, cost_bps=None):
+    if cost_bps is None:
+      cost_bps = TRAIN["cost_bps"]
     x   = batch["x"].to(device)
     y   = batch["y"].to(device)       # scalar per sample
     sid = batch["sid"].to(device)
@@ -52,13 +68,15 @@ def _baseline_step(model, batch, device, warmup):
     # The target_return at the endpoint of each window is replicated
     # across time-steps so the Sharpe loss operates on the full sequence.
   
-    loss = sharpe_loss_tc(pos, y, warmup, cost_bps = TRAIN["cost_bps"])
+    loss = sharpe_loss_tc(pos, target_y, warmup, cost_bps=cost_bps)
     return loss, pos, y, batch["date"], batch["ticker"]
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # X-trend Step
 # ═══════════════════════════════════════════════════════════════════════════════
-def _xtrend_step(model, batch, device, warmup):
+def _xtrend_step(model, batch, device, warmup, cost_bps=None):
+    if cost_bps is None:
+      cost_bps = TRAIN["cost_bps"]
     target_x  = batch["target_x"].to(device)       # [B, lt, F]
     target_y  = batch["target_y"].to(device)        # [B, lt]
     target_id = batch["target_id"].to(device)       # [B]
@@ -68,13 +86,15 @@ def _xtrend_step(model, batch, device, warmup):
 
     pos = model(target_x, target_id, ctx_x, ctx_y, ctx_id)   # [B, lt]
 
-    loss = sharpe_loss_tc(pos, target_y, warmup, cost_bps=TRAIN["cost_bps"])
+    loss = sharpe_loss_tc(pos, target_y, warmup, cost_bps=cost_bps)
     return loss, pos, target_y, batch["date"], batch["ticker"]
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # X-trend + Cross-Section Step
 # ═══════════════════════════════════════════════════════════════════════════════
-def _xtrend_cs_step(model, batch, device, warmup):
+def _xtrend_cs_step(model, batch, device, warmup, cost_bps = None):
+    if cost_bps is None:
+      cost_bps = TRAIN["cost_bps"]
     target_x  = batch["target_x"].to(device)
     target_y  = batch["target_y"].to(device)
     target_id = batch["target_id"].to(device)
@@ -87,14 +107,14 @@ def _xtrend_cs_step(model, batch, device, warmup):
     peer_mask = batch["peer_mask"].to(device)
 
     pos = model(target_x, target_id, ctx_x, ctx_y, ctx_id, peer_x, peer_id, peer_mask)
-    loss = sharpe_loss_tc(pos, target_y, warmup, cost_bps=TRAIN["cost_bps"])
+    loss = sharpe_loss_tc(pos, target_y, warmup, cost_bps=cost_bps)
     return loss, pos, target_y, batch["date"], batch["ticker"]
 
-def train_epoch(model, loader, optim, device, warmup, max_gn, step_fn, scheduler=None):
+def train_epoch(model, loader, optim, device, warmup, max_gn, step_fn, cost_bps, scheduler=None,):
     model.train()
     total_loss, n = 0.0, 0
     for batch in tqdm(loader, leave=False, desc="train"):
-        loss, *_ = step_fn(model, batch, device, warmup)
+        loss, *_ = step_fn(model, batch, device, warmup, cost_bps)
         optim.zero_grad(set_to_none=True)
         loss.backward()
         if max_gn:
@@ -108,12 +128,14 @@ def train_epoch(model, loader, optim, device, warmup, max_gn, step_fn, scheduler
 
 
 @torch.no_grad()
-def eval_epoch(model, loader, device, warmup, step_fn):
+def eval_epoch(model, loader, device, warmup, step_fn, cost_bps=None):
+    if cost_bps is None:
+        cost_bps = TRAIN["cost_bps"]
     model.eval()
     total_loss, n = 0.0, 0
     rows = []
     for batch in tqdm(loader, leave=False, desc="eval"):
-        loss, pos, ret, dates, tickers = step_fn(model, batch, device, warmup)
+        loss, pos, ret, dates, tickers = step_fn(model, batch, device, warmup, cost_bps=cost_bps)
         bs = pos.size(0)
         total_loss += loss.item() * bs
         n += bs
@@ -127,14 +149,25 @@ def eval_epoch(model, loader, device, warmup, step_fn):
 
     df = pd.DataFrame(rows)
     df["date"] = pd.to_datetime(df["date"])
-    df["strategy_return"] = df["position"] * df["target_return"]
-    daily = df.groupby("date")["strategy_return"].mean().sort_index()
+    
+    df, daily_gross, daily_net, daily_turnover = _daily_results_from_pred_df(df, cost_bps)
+    
+    gross_sharpe = annualised_sharpe(daily_gross)
+    gross_mdd = max_drawdown(daily_gross)
+    net_sharpe = annualised_sharpe(daily_net)
+    net_mdd = max_drawdown(daily_net)
+    
     return {
         "loss": total_loss / max(n, 1),
         "pred_df": df,
-        "daily_returns": daily,
-        "sharpe": annualised_sharpe(daily),
-        "max_drawdown": max_drawdown(daily),
+        "daily_returns": daily_gross,          # keep old key for compatibility
+        "daily_gross_returns": daily_gross,
+        "daily_net_returns": daily_net,
+        "sharpe": gross_sharpe,                # keep old key for compatibility
+        "max_drawdown": gross_mdd,             # keep old key for compatibility
+        "net_sharpe": net_sharpe,
+        "net_max_drawdown": net_mdd,
+        "avg_turnover": float(daily_turnover.mean()),
     }
   
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -147,6 +180,7 @@ def fit(model, train_loader, val_loader, device,
     if tcfg is None: tcfg = TRAIN
     if mcfg is None: mcfg = MODEL
     warmup = mcfg["warmup_steps"]
+    cost_bps = tcfg["cost_bps"]
 
     optim = torch.optim.Adam(model.parameters(), lr=tcfg["lr"], weight_decay=tcfg["weight_decay"])
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optim, T_max=tcfg["epochs"])
@@ -157,25 +191,44 @@ def fit(model, train_loader, val_loader, device,
     history = []
 
     for ep in range(1, tcfg["epochs"] + 1):
-        tl = train_epoch(model, train_loader, optim, device, warmup, tcfg["max_grad_norm"], step_fn, scheduler)
-        vs = eval_epoch(model, val_loader, device, warmup, step_fn)
+      tl = train_epoch(
+          model, train_loader, optim, device, warmup,
+          tcfg["max_grad_norm"], step_fn, cost_bps=cost_bps, scheduler=scheduler
+      )
+      vs = eval_epoch(
+          model, val_loader, device, warmup, step_fn, cost_bps=cost_bps
+      )
 
-        cur_lr = scheduler.get_last_lr()[0]
-        row = {"epoch": ep, "train_loss": tl, "val_loss": vs["loss"],
-               "val_sharpe": vs["sharpe"], "val_mdd": vs["max_drawdown"], "lr": cur_lr}
-        history.append(row)
-        print(f"Ep {ep:03d} | trn {tl:.4f} | val {vs['loss']:.4f} | "
-              f"sharpe {vs['sharpe']:.4f} | mdd {vs['max_drawdown']:.4f} | lr {cur_lr:.2e}")
+      cur_lr = scheduler.get_last_lr()[0]
+      row = {
+          "epoch": ep,
+          "train_loss": tl,
+          "val_loss": vs["loss"],
+          "val_sharpe": vs["net_sharpe"],          # selection metric
+          "val_sharpe_gross": vs["sharpe"],
+          "val_sharpe_net": vs["net_sharpe"],
+          "val_mdd": vs["net_max_drawdown"],       # selection metric
+          "val_mdd_gross": vs["max_drawdown"],
+          "val_mdd_net": vs["net_max_drawdown"],
+          "val_turnover": vs["avg_turnover"],
+          "lr": cur_lr,
+      }
+      history.append(row)
+      print(
+          f"Ep {ep:03d} | trn {tl:.4f} | val {vs['loss']:.4f} | "
+          f"gross {vs['sharpe']:.4f} | net {vs['net_sharpe']:.4f} | "
+          f"to {vs['avg_turnover']:.4f} | lr {cur_lr:.2e}"
+      )
 
-        if vs["sharpe"] > best_sharpe + 1e-4:
-            best_sharpe = vs["sharpe"]
-            best_state = copy.deepcopy(model.state_dict())
-            wait = 0
-        else:
-            wait += 1
-            if wait >= tcfg["patience"]:
-                print(f"Early stop at epoch {ep}")
-                break
+      if vs["net_sharpe"] > best_sharpe + 1e-4::
+          best_sharpe = vs["net_sharpe"]
+          best_state = copy.deepcopy(model.state_dict())
+          wait = 0
+      else:
+          wait += 1
+          if wait >= tcfg["patience"]:
+              print(f"Early stop at epoch {ep}")
+              break
 
     model.load_state_dict(best_state)
     return model, pd.DataFrame(history)
