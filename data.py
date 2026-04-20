@@ -33,7 +33,14 @@ def build_panel(cfg=None) -> Tuple[pd.DataFrame, List[str], Dict[str, int]]:
         cfg = DATA
 
     tickers = list(cfg.get("tickers", DEFAULT_TICKERS))
-    prices = yf.download(tickers, start=cfg["start"], end=cfg["end"], progress=False)["Close"]
+    prices = yf.download(
+        tickers,
+        start=cfg["start"],
+        end=cfg["end"],
+        progress=False,
+        auto_adjust=False,
+    )["Close"]
+
     if isinstance(prices, pd.Series):
         prices = prices.to_frame(tickers[0])
     prices = prices.sort_index().dropna(how="all")
@@ -316,14 +323,15 @@ class EpisodeDataset(Dataset):
             pool = self.ctx_pool
             if len(pool) == 0:
                 raise IndexError("Training context pool is empty.")
-            picks = np.random.choice(len(pool), self.nc, replace=(len(pool) < self.nc))
+            rng = np.random.default_rng(self.seed + idx)
+            picks = rng.choice(len(pool), self.nc, replace=(len(pool) < self.nc))
         else:
             pool = self.ctx_pool_by_date[pd.Timestamp(tgt_date)]
             if len(pool) == 0:
                 raise IndexError(f"No causal contexts available for target date {tgt_date}.")
             rng = np.random.default_rng(self.seed + idx)
             picks = rng.choice(len(pool), self.nc, replace=(len(pool) < self.nc))
-
+    
         picks = np.atleast_1d(picks).tolist()
         return [pool[p] for p in picks]
 
@@ -485,7 +493,7 @@ def build_episode_loaders(panel, feature_cols, train_d, val_d, test_d,
             batch_size=cfg["batch_size"],
             shuffle=True,
             drop_last=False,
-            num_workers=4,
+            num_workers=0,
             pin_memory=True,
             collate_fn=_episode_collate,
         ),
