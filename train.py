@@ -110,7 +110,9 @@ def _xtrend_cs_step(model, batch, device, warmup, cost_bps = None):
     loss = sharpe_loss_tc(pos, target_y, warmup, cost_bps=cost_bps)
     return loss, pos, target_y, batch["date"], batch["ticker"]
 
-def train_epoch(model, loader, optim, device, warmup, max_gn, step_fn, cost_bps, scheduler=None,):
+def train_epoch(model, loader, optim, device, warmup, max_gn, step_fn, cost_bps = None, scheduler=None):
+    if cost_bps is None:
+        cost_bps = TRAIN["cost_bps"]
     model.train()
     total_loss, n = 0.0, 0
     for batch in tqdm(loader, leave=False, desc="train"):
