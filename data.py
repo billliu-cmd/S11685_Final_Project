@@ -241,7 +241,7 @@ def build_baseline_loaders(panel, feature_cols, train_d, val_d, test_d, cfg = No
             batch_size=cfg["batch_size"],
             shuffle=True,
             drop_last=False,
-            num_workers=4,
+            num_workers=0,
             pin_memory=True,
             collate_fn=_window_collate,
         ),
