@@ -5,6 +5,7 @@ import pandas as pd
 import torch
 from torch.utils.data import Dataset, DataLoader
 import yfinance as yf
+from torch.utils.data.sampler import Sampler
 
 from .config import (
     DATA, VOL_TARGET, VOL_LOOKBACK,
@@ -12,6 +13,78 @@ from .config import (
 )
 from .cpd import get_cached_regimes
 
+class ConsecutiveDatePanelBatchSampler(Sampler):
+    """
+    Yields blocks of consecutive dates, with all assets for each date.
+
+    Each block contains `days_per_block + 1` dates: the first date is an anchor
+    for turnover, and the remaining dates contribute to the panel endpoint loss.
+    """
+
+    def __init__(self, dataset, days_per_block=8, shuffle=True, seed=42, drop_partial=True):
+        self.days_per_block = days_per_block
+        self.shuffle = shuffle
+        self.seed = seed
+        self.drop_partial = drop_partial
+        self.epoch = 0
+
+        by_date = {}
+        for ds_idx, (tk, end) in enumerate(dataset.targets):
+            dt = pd.Timestamp(dataset.groups[tk]["dates"][end])
+            by_date.setdefault(dt, []).append((tk, ds_idx))
+
+        ordered_dates = sorted(by_date)
+        if not ordered_dates:
+            self.blocks = []
+            self.num_assets = 0
+            return
+
+        ref_tickers = None
+        self.date_rows = []
+        for dt in ordered_dates:
+            row = sorted(by_date[dt], key=lambda x: x[0])
+            tickers = [tk for tk, _ in row]
+            if ref_tickers is None:
+                ref_tickers = tickers
+            elif tickers != ref_tickers:
+                raise ValueError(f"Inconsistent cross-section at {dt}: {tickers} vs {ref_tickers}")
+            self.date_rows.append([idx for _, idx in row])
+
+        self.num_assets = len(ref_tickers)
+        span = days_per_block + 1
+        stride = max(days_per_block, 1)
+        self.blocks = []
+
+        if len(self.date_rows) >= span:
+            for start in range(0, len(self.date_rows) - span + 1, stride):
+                rows = self.date_rows[start:start + span]
+                self.blocks.append([idx for row in rows for idx in row])
+
+            if not drop_partial:
+                tail_start = ((len(self.date_rows) - span) // stride + 1) * stride
+                tail = self.date_rows[tail_start:]
+                if len(tail) >= 2:
+                    self.blocks.append([idx for row in tail for idx in row])
+
+        print(
+            f"ConsecutiveDatePanelBatchSampler: {len(self.blocks)} blocks, "
+            f"{span} dates/block, {self.num_assets} assets/date"
+        )
+
+    def set_epoch(self, epoch):
+        self.epoch = epoch
+
+    def __iter__(self):
+        if self.shuffle:
+            rng = np.random.default_rng(self.seed + self.epoch)
+            order = rng.permutation(len(self.blocks))
+        else:
+            order = range(len(self.blocks))
+        for i in order:
+            yield self.blocks[i]
+
+    def __len__(self):
+        return len(self.blocks)
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # 1.  Feature engineering
@@ -442,7 +515,8 @@ def _episode_collate(batch):
 
 def build_episode_loaders(panel, feature_cols, train_d, val_d, test_d,
                           train_regimes, cfg=None, regime_caches=None,
-                          include_peers=False, max_peers=None):
+                          include_peers=False, max_peers=None,
+                          panel_turnover=False, panel_block_days=8):
     if cfg is None:
         cfg = DATA
     if regime_caches is None:
@@ -487,8 +561,22 @@ def build_episode_loaders(panel, feature_cols, train_d, val_d, test_d,
             avg_pool = np.mean([len(v) for v in ds.ctx_pool_by_date.values()]) if ds.ctx_pool_by_date else 0.0
             print(f"  avg causal context pool per target date: {avg_pool:.1f}")
 
-    loaders = {
-        "train": DataLoader(
+    if panel_turnover:
+        train_batch_sampler = ConsecutiveDatePanelBatchSampler(
+            sets["train"],
+            days_per_block=panel_block_days,
+            shuffle=True,
+            seed=cfg["seed"],
+        )
+        train_loader = DataLoader(
+            sets["train"],
+            batch_sampler=train_batch_sampler,
+            num_workers=0,
+            pin_memory=True,
+            collate_fn=_episode_collate,
+        )
+    else:
+        train_loader = DataLoader(
             sets["train"],
             batch_size=cfg["batch_size"],
             shuffle=True,
@@ -496,7 +584,10 @@ def build_episode_loaders(panel, feature_cols, train_d, val_d, test_d,
             num_workers=0,
             pin_memory=True,
             collate_fn=_episode_collate,
-        ),
+        )
+    
+    loaders = {
+        "train": train_loader,
         "val": DataLoader(
             sets["val"],
             batch_size=cfg["batch_size"],
