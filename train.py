@@ -53,6 +53,45 @@ def _daily_results_from_pred_df(pred_df: pd.DataFrame, cost_bps: float):
     daily_net = daily_gross - (cost_bps / 10_000.0) * daily_turnover
 
     return df, daily_gross, daily_net, daily_turnover
+
+def panel_endpoint_sharpe_loss(pos_panel: torch.Tensor, ret_panel: torch.Tensor,
+                               cost_bps: float, eps: float = 1e-9) -> torch.Tensor:
+    """
+    Panel-level endpoint Sharpe over consecutive dates.
+    """
+    if pos_panel.size(0) < 2:
+        raise ValueError("panel_endpoint_sharpe_loss requires at least 2 dates per block.")
+
+    gross = (pos_panel[1:] * ret_panel[1:]).mean(dim=1)
+    turnover = (pos_panel[1:] - pos_panel[:-1]).abs().mean(dim=1)
+    net = gross - (cost_bps / 10_000.0) * turnover
+
+    mu = net.mean()
+    var = (net.pow(2).mean() - mu.pow(2)).clamp_min(eps)
+    return -math.sqrt(252.0) * mu / var.sqrt()
+
+
+def _reshape_panel_endpoints(pos_end: torch.Tensor, ret_end: torch.Tensor,
+                             dates, tickers):
+    """
+    Reshape flattened endpoint predictions into [dates, assets] panel matrices.
+    """
+    date_index = pd.to_datetime(pd.Index(dates))
+    ticker_index = pd.Index(tickers)
+    unique_dates = pd.Index(pd.unique(date_index))
+    unique_tickers = pd.Index(pd.unique(ticker_index))
+
+    n_dates = len(unique_dates)
+    n_assets = len(unique_tickers)
+    expected = n_dates * n_assets
+    if pos_end.numel() != expected:
+        raise ValueError(
+            f"Expected {n_dates} dates x {n_assets} assets = {expected} samples, "
+            f"got {pos_end.numel()}."
+        )
+
+    return pos_end.reshape(n_dates, n_assets), ret_end.reshape(n_dates, n_assets)
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # Baseline Step
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -109,6 +148,82 @@ def _xtrend_cs_step(model, batch, device, warmup, cost_bps = None):
     pos = model(target_x, target_id, ctx_x, ctx_y, ctx_id, peer_x, peer_id, peer_mask)
     loss = sharpe_loss_tc(pos, target_y, warmup, cost_bps=cost_bps)
     return loss, pos, target_y, batch["date"], batch["ticker"]
+
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Panel Approach for all Methods
+# ═══════════════════════════════════════════════════════════════════════════════
+def _baseline_step_panel(model, batch, device, warmup, cost_bps=None,
+                         endpoint_weight=0.5, mag_reg=0.0):
+    if cost_bps is None:
+        cost_bps = TRAIN["cost_bps"]
+    x = batch["x"].to(device)
+    y = batch["y"].to(device)
+    sid = batch["sid"].to(device)
+    pos = model(x, sid)
+
+    intra_loss = sharpe_loss_tc(pos, y, warmup, cost_bps=cost_bps)
+    pos_panel, ret_panel = _reshape_panel_endpoints(pos[:, -1], y[:, -1], batch["date"], batch["ticker"])
+    end_loss = panel_endpoint_sharpe_loss(pos_panel, ret_panel, cost_bps)
+
+    loss = (1.0 - endpoint_weight) * intra_loss + endpoint_weight * end_loss
+    if mag_reg > 0.0:
+        loss = loss + mag_reg * (pos.pow(2).mean() - 0.25).clamp_min(0.0)
+    return loss, pos, y, batch["date"], batch["ticker"]
+
+
+def _xtrend_step_panel(model, batch, device, warmup, cost_bps=None,
+                       endpoint_weight=0.5, mag_reg=0.0):
+    if cost_bps is None:
+        cost_bps = TRAIN["cost_bps"]
+    target_x = batch["target_x"].to(device)
+    target_y = batch["target_y"].to(device)
+    target_id = batch["target_id"].to(device)
+    ctx_x = batch["ctx_x"].to(device)
+    ctx_y = batch["ctx_y"].to(device)
+    ctx_id = batch["ctx_id"].to(device)
+
+    pos = model(target_x, target_id, ctx_x, ctx_y, ctx_id)
+    intra_loss = sharpe_loss_tc(pos, target_y, warmup, cost_bps=cost_bps)
+    pos_panel, ret_panel = _reshape_panel_endpoints(
+        pos[:, -1], target_y[:, -1], batch["date"], batch["ticker"]
+    )
+    end_loss = panel_endpoint_sharpe_loss(pos_panel, ret_panel, cost_bps)
+
+    loss = (1.0 - endpoint_weight) * intra_loss + endpoint_weight * end_loss
+    if mag_reg > 0.0:
+        loss = loss + mag_reg * (pos.pow(2).mean() - 0.25).clamp_min(0.0)
+    return loss, pos, target_y, batch["date"], batch["ticker"]
+
+
+def _xtrend_cs_step_panel(model, batch, device, warmup, cost_bps=None,
+                          endpoint_weight=0.5, mag_reg=0.0):
+    if cost_bps is None:
+        cost_bps = TRAIN["cost_bps"]
+    target_x = batch["target_x"].to(device)
+    target_y = batch["target_y"].to(device)
+    target_id = batch["target_id"].to(device)
+    ctx_x = batch["ctx_x"].to(device)
+    ctx_y = batch["ctx_y"].to(device)
+    ctx_id = batch["ctx_id"].to(device)
+    peer_x = batch["peer_x"].to(device)
+    peer_id = batch["peer_id"].to(device)
+    peer_mask = batch["peer_mask"].to(device)
+
+    pos = model(target_x, target_id, ctx_x, ctx_y, ctx_id, peer_x, peer_id, peer_mask)
+    intra_loss = sharpe_loss_tc(pos, target_y, warmup, cost_bps=cost_bps)
+    pos_panel, ret_panel = _reshape_panel_endpoints(
+        pos[:, -1], target_y[:, -1], batch["date"], batch["ticker"]
+    )
+    end_loss = panel_endpoint_sharpe_loss(pos_panel, ret_panel, cost_bps)
+
+    loss = (1.0 - endpoint_weight) * intra_loss + endpoint_weight * end_loss
+    if mag_reg > 0.0:
+        loss = loss + mag_reg * (pos.pow(2).mean() - 0.25).clamp_min(0.0)
+    return loss, pos, target_y, batch["date"], batch["ticker"]
+
+
 
 def train_epoch(model, loader, optim, device, warmup, max_gn, step_fn, cost_bps = None, scheduler=None):
     if cost_bps is None:
@@ -176,9 +291,13 @@ def eval_epoch(model, loader, device, warmup, step_fn, cost_bps=None):
 # Actual training 
 # ═══════════════════════════════════════════════════════════════════════════════
 def fit(model, train_loader, val_loader, device,
-        step_fn,                         # _baseline_step or _xtrend_step
+        step_fn,
         tcfg = None,
-        mcfg = None):
+        mcfg = None,
+        eval_step_fn = None):
+    
+    if eval_step_fn is None:
+      eval_step_fn = step_fn
     if tcfg is None: tcfg = TRAIN
     if mcfg is None: mcfg = MODEL
     warmup = mcfg["warmup_steps"]
@@ -193,12 +312,16 @@ def fit(model, train_loader, val_loader, device,
     history = []
 
     for ep in range(1, tcfg["epochs"] + 1):
+      sampler = getattr(train_loader, "batch_sampler", None)
+      if hasattr(sampler, "set_epoch"):
+          sampler.set_epoch(ep)
+
       tl = train_epoch(
           model, train_loader, optim, device, warmup,
           tcfg["max_grad_norm"], step_fn, cost_bps=cost_bps, scheduler=scheduler
       )
       vs = eval_epoch(
-          model, val_loader, device, warmup, step_fn, cost_bps=cost_bps
+          model, val_loader, device, warmup, eval_step_fn, cost_bps=cost_bps
       )
 
       cur_lr = scheduler.get_last_lr()[0]
