@@ -2,23 +2,32 @@ import torch
 import torch.nn as nn
 
 from .x_trend import XTrend
-from .components import TemporalBlock, CrossSectionBlock
+from .components import CrossSectionBlock
 
-# Extension 1: X-Trend model with Cross-Sectional Peers
+# Extension 1: Cross-Extension
 class XTrendCS(XTrend):
     def __init__(self, input_dim, num_assets, cfg=None):
         super().__init__(input_dim, num_assets, cfg)
         hid = self.cfg["hidden_dim"]
-        
+
+        # Slightly stronger regularization on the CS branch.
+        cs_dropout = max(self.cfg["dropout"] * 2.0, 0.2)
+
         self.cs_block = CrossSectionBlock(
-            hid, self.cfg["num_heads"], self.cfg["dropout"]
+            hid, self.cfg["num_heads"], cs_dropout
         )
 
-        # Branch-specific projections before fusion.
-        # Advised by Project Mentor
-        self.reg_proj = nn.Linear(hid, hid)
+        # Residual adapter:
+        # enc_y = reg_y + alpha * cs_proj(cs_y)
+        # Zero-init means epoch 0 == plain X-Trend exactly.
         self.cs_proj = nn.Linear(hid, hid)
-        self.fuse_norm = nn.LayerNorm(hid)
+        nn.init.zeros_(self.cs_proj.weight)
+        nn.init.zeros_(self.cs_proj.bias)
+
+        # Per-feature, per-timestep gate controlling how much CS info to use.
+        self.gate = nn.Linear(2 * hid, hid)
+        nn.init.zeros_(self.gate.weight)
+        nn.init.constant_(self.gate.bias, -2.0)   # sigmoid(-2) ≈ 0.12
 
     def encode_peers(self, peer_x, peer_id):
         B, N, T, F = peer_x.shape
@@ -29,19 +38,22 @@ class XTrendCS(XTrend):
 
     def forward(self, target_x, target_id, ctx_x, ctx_y, ctx_id,
                 peer_x=None, peer_id=None, peer_mask=None):
-        q = self.query_encoder(target_x, target_id)          # [B, T, H]
+        q = self.query_encoder(target_x, target_id)                   # [B, T, H]
 
-        # Historical CPD branch
+        # Historical CPD branch (unchanged)
         k, v = self.encode_contexts(ctx_x, ctx_y, ctx_id)
         v_prime = self.ctx_ffn(self.ctx_self_attn(v))
         reg_attn = self.cross_attn(q, k, v_prime)
         reg_y = self.post_cross_norm(self.post_cross_ffn(reg_attn))   # [B, T, H]
 
-        # Cross-sectional peer branch
+        # Cross-sectional branch as a residual improvement to reg_y
         if peer_x is not None and peer_id is not None:
             peer_h = self.encode_peers(peer_x, peer_id)               # [B, N, T, H]
             cs_y = self.cs_block(q, peer_h, peer_mask)                # [B, T, H]
-            enc_y = self.fuse_norm(self.reg_proj(reg_y) + self.cs_proj(cs_y))
+
+            delta = self.cs_proj(cs_y)                                # zero at init
+            alpha = torch.sigmoid(self.gate(torch.cat([reg_y, cs_y], dim=-1)))
+            enc_y = reg_y + alpha * delta                             # == reg_y at init
         else:
             enc_y = reg_y
 
