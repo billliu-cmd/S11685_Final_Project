@@ -75,8 +75,6 @@ MODEL = {
     "ll_use_bennett": False,
     "ll_use_rank_mask": False,
     "ll_use_delta_value": False,
-
-
 }
 
 TRAIN = {
