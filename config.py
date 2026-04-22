@@ -68,6 +68,9 @@ MODEL = {
     "num_heads":    4,             # attention heads in X-Trend
     "dropout":      0.1,
     "warmup_steps": 63,            # l_s : ignore first 63 predictions in Sharpe loss
+    "lead_lags": (1, 5, 21),
+    "ll_use_delta_tokens": False,
+
 }
 
 TRAIN = {
@@ -86,4 +89,5 @@ CPD = {
     "l_max":  21,       # cap regime length
     "recompute_every": 21,   # recompute causal CPD cache every 21 trading days
 }
+
 
