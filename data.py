@@ -427,15 +427,9 @@ class EpisodeDataset(Dataset):
             if ptk == target_tk:
                 continue
             peers.append((ptk, pend, self.groups[ptk]["asset_id"]))
-    
+            
         if self.max_peers is not None and len(peers) > self.max_peers:
-            if self.mode == "train":
-                rng = np.random.default_rng(self.seed + idx * 7919 + 1)
-                picks = rng.choice(len(peers), self.max_peers, replace=False)
-                picks = sorted(np.atleast_1d(picks).tolist())
-                peers = [peers[i] for i in picks]
-            else:
-                peers = peers[:self.max_peers]
+            peers = peers[:self.max_peers]
     
         return peers
 
