@@ -276,6 +276,8 @@ def eval_epoch(model, loader, device, warmup, step_fn, cost_bps=None):
     
     return {
         "loss": total_loss / max(n, 1),
+        "gross_sharpe": gross_sharpe,
+        "gross_max_drawdown": gross_mdd,
         "pred_df": df,
         "daily_returns": daily_gross,          # keep old key for compatibility
         "daily_gross_returns": daily_gross,
