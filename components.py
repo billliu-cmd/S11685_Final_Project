@@ -183,4 +183,87 @@ class CrossSectionBlock(nn.Module):
       cross_ctx = self.cross_ffn_norm(cross_ctx + self.drop(self.cross_ffn(cross_ctx)))
   
       return cross_ctx                                              # [B, T, H]
+
+class LeadLagBlock(nn.Module):
+    """
+    Build lagged peer tokens and let the current target sequence attend to them.
+    This is additive on top of the simple cross-sectional approach.
+    """
+    def __init__(self, hid, lag_steps=(1, 5, 21), num_heads=4, dropout=0.1,
+                 include_delta_tokens=False):
+        super().__init__()
+        self.lag_steps = tuple(int(l) for l in lag_steps if int(l) > 0)
+        if not self.lag_steps:
+            raise ValueError("lag_steps must contain at least one positive lag")
+
+        self.include_delta_tokens = include_delta_tokens
+        self.lag_emb = nn.Embedding(len(self.lag_steps), hid)
+        if include_delta_tokens:
+            self.token_type_emb = nn.Embedding(2, hid)   # 0=relative, 1=delta
+
+        self.token_self_attn = nn.MultiheadAttention(hid, num_heads, dropout, batch_first=True)
+        self.token_attn_norm = nn.LayerNorm(hid)
+        self.token_ffn = nn.Sequential(nn.Linear(hid, hid), nn.ELU(), nn.Linear(hid, hid))
+        self.token_ffn_norm = nn.LayerNorm(hid)
+
+        self.target_cross_attn = nn.MultiheadAttention(hid, num_heads, dropout, batch_first=True)
+        self.cross_attn_norm = nn.LayerNorm(hid)
+        self.cross_ffn = nn.Sequential(nn.Linear(hid, hid), nn.ELU(), nn.Linear(hid, hid))
+        self.cross_ffn_norm = nn.LayerNorm(hid)
+
+        self.drop = nn.Dropout(dropout)
+
+    def forward(self, target_h, peer_h, peer_mask=None):
+        B, N, T, H = peer_h.shape
+        if peer_mask is None:
+            peer_mask = torch.ones(B, N, dtype=torch.bool, device=peer_h.device)
+
+        tokens, masks = [], []
+
+        for lag_idx, lag in enumerate(self.lag_steps):
+            if lag >= T:
+                continue
+
+            peer_lag = peer_h[:, :, T - 1 - lag, :]                    # [B, N, H]
+            target_lag = target_h[:, T - 1 - lag, :].unsqueeze(1)      # [B, 1, H]
+
+            # Clean lagged cross-sectional deviation at the lagged time.
+            tok_rel = peer_lag - target_lag
+            tok_rel = tok_rel + self.lag_emb.weight[lag_idx].view(1, 1, H)
+            if self.include_delta_tokens:
+                tok_rel = tok_rel + self.token_type_emb.weight[0].view(1, 1, H)
+            tokens.append(tok_rel)
+            masks.append(peer_mask)
+
+            # Optional pure peer change token.
+            if self.include_delta_tokens:
+                peer_now = peer_h[:, :, -1, :]
+                tok_delta = peer_now - peer_lag
+                tok_delta = tok_delta + self.lag_emb.weight[lag_idx].view(1, 1, H)
+                tok_delta = tok_delta + self.token_type_emb.weight[1].view(1, 1, H)
+                tokens.append(tok_delta)
+                masks.append(peer_mask)
+
+        if not tokens:
+            return torch.zeros_like(target_h)
+
+        token_x = torch.cat(tokens, dim=1)       # [B, M, H]
+        token_mask = torch.cat(masks, dim=1)     # [B, M]
+        key_padding_mask = ~token_mask
+
+        token_attn, _ = self.token_self_attn(
+            token_x, token_x, token_x,
+            key_padding_mask=key_padding_mask,
+        )
+        token_ctx = self.token_attn_norm(token_x + self.drop(token_attn))
+        token_ctx = self.token_ffn_norm(token_ctx + self.drop(self.token_ffn(token_ctx)))
+
+        cross_out, _ = self.target_cross_attn(
+            target_h, token_ctx, token_ctx,
+            key_padding_mask=key_padding_mask,
+        )
+        cross_ctx = self.cross_attn_norm(target_h + self.drop(cross_out))
+        cross_ctx = self.cross_ffn_norm(cross_ctx + self.drop(self.cross_ffn(cross_ctx)))
+        return cross_ctx
+
   
