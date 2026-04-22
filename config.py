@@ -70,6 +70,12 @@ MODEL = {
     "warmup_steps": 63,            # l_s : ignore first 63 predictions in Sharpe loss
     "lead_lags": (1, 5, 21),
     "ll_use_delta_tokens": False,
+    "ll_top_k": 3,
+    "ll_alpha_init": 0.1,
+    "ll_use_bennett": False,
+    "ll_use_rank_mask": False,
+    "ll_use_delta_value": False,
+
 
 }
 
