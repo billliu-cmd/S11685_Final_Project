@@ -129,8 +129,8 @@ class CrossAttention(nn.Module):
 # Cross-Section Block (Self-Attention + Cross-Attention)
 class CrossSectionBlock(nn.Module):
     """
-      1. self-attend across peer assets
-      2. let the target state attend to the peer set
+    Time-synchronous peer attention:
+    for each timestep t, target[t] attends only to peers at the same t.
     """
     def __init__(self, hid, num_heads=4, dropout=0.1):
         super().__init__()
@@ -147,42 +147,38 @@ class CrossSectionBlock(nn.Module):
         self.drop = nn.Dropout(dropout)
 
     def forward(self, target_h, peer_h, peer_mask=None):
-      """
-      target_h: [B, T, H]
-      peer_h:   [B, N, T, H]
-      returns:  [B, T, H]
-      """
-      B, N, T, H = peer_h.shape
-  
-      # Pool peers to one vector per peer, matching X-Trend's context style.
-      peer_pool = peer_h[:, :, -1, :]                              # [B, N, H]
-  
-      # Use the target endpoint as the anchor so peers represent deviation
-      # from the target, not the common market mode.
-      target_end = target_h[:, -1, :]                               # [B, H]
-      peer_rel = peer_pool - target_end.unsqueeze(1)                # [B, N, H]
-  
-      key_padding_mask = None
-      if peer_mask is not None:
-          key_padding_mask = ~peer_mask                              # [B, N]
-  
-      # Self-attention across peers, once per batch.
-      peer_attn, _ = self.peer_self_attn(
-          peer_rel, peer_rel, peer_rel,
-          key_padding_mask=key_padding_mask,
-      )
-      peer_ctx = self.peer_attn_norm(peer_rel + self.drop(peer_attn))
-      peer_ctx = self.peer_ffn_norm(peer_ctx + self.drop(self.peer_ffn(peer_ctx)))
-  
-      # Each target timestep attends over the pooled peer set.
-      cross_out, _ = self.target_cross_attn(
-          target_h, peer_ctx, peer_ctx,
-          key_padding_mask=key_padding_mask,
-      )
-      cross_ctx = self.cross_attn_norm(target_h + self.drop(cross_out))
-      cross_ctx = self.cross_ffn_norm(cross_ctx + self.drop(self.cross_ffn(cross_ctx)))
-  
-      return cross_ctx                                              # [B, T, H]
+        # target_h: [B, T, H]
+        # peer_h:   [B, N, T, H]
+        B, N, T, H = peer_h.shape
+
+        if peer_mask is None:
+            peer_mask = torch.ones(B, N, dtype=torch.bool, device=peer_h.device)
+
+        # Time-synchronous relative peer tokens: peer[t] - target[t]
+        target_exp = target_h.unsqueeze(1)                           # [B, 1, T, H]
+        peer_rel = peer_h - target_exp                               # [B, N, T, H]
+
+        # Flatten time so attention happens independently at each t.
+        peer_bt = peer_rel.permute(0, 2, 1, 3).reshape(B * T, N, H)  # [B*T, N, H]
+        target_bt = target_h.reshape(B * T, 1, H)                    # [B*T, 1, H]
+
+        key_padding_mask = (~peer_mask).unsqueeze(1).expand(B, T, N).reshape(B * T, N)
+
+        peer_attn, _ = self.peer_self_attn(
+            peer_bt, peer_bt, peer_bt,
+            key_padding_mask=key_padding_mask,
+        )
+        peer_ctx = self.peer_attn_norm(peer_bt + self.drop(peer_attn))
+        peer_ctx = self.peer_ffn_norm(peer_ctx + self.drop(self.peer_ffn(peer_ctx)))
+
+        cross_out, _ = self.target_cross_attn(
+            target_bt, peer_ctx, peer_ctx,
+            key_padding_mask=key_padding_mask,
+        )
+        cross_ctx = self.cross_attn_norm(target_bt + self.drop(cross_out))
+        cross_ctx = self.cross_ffn_norm(cross_ctx + self.drop(self.cross_ffn(cross_ctx)))
+
+        return cross_ctx.squeeze(1).reshape(B, T, H)
 
 class LeadLagBlock(nn.Module):
     """
