@@ -292,19 +292,28 @@ def eval_epoch(model, loader, device, warmup, step_fn, cost_bps=None):
 # ═══════════════════════════════════════════════════════════════════════════════
 def fit(model, train_loader, val_loader, device,
         step_fn,
-        tcfg = None,
-        mcfg = None,
-        eval_step_fn = None):
-    
+        tcfg=None,
+        mcfg=None,
+        eval_step_fn=None):
+
     if eval_step_fn is None:
-      eval_step_fn = step_fn
-    if tcfg is None: tcfg = TRAIN
-    if mcfg is None: mcfg = MODEL
+        eval_step_fn = step_fn
+    if tcfg is None:
+        tcfg = TRAIN
+    if mcfg is None:
+        mcfg = MODEL
+
     warmup = mcfg["warmup_steps"]
     cost_bps = tcfg["cost_bps"]
 
-    optim = torch.optim.Adam(model.parameters(), lr=tcfg["lr"], weight_decay=tcfg["weight_decay"])
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optim, T_max=tcfg["epochs"])
+    optim = torch.optim.Adam(
+        model.parameters(),
+        lr=tcfg["lr"],
+        weight_decay=tcfg["weight_decay"],
+    )
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+        optim, T_max=tcfg["epochs"]
+    )
 
     best_state = copy.deepcopy(model.state_dict())
     best_sharpe = -float("inf")
@@ -312,49 +321,54 @@ def fit(model, train_loader, val_loader, device,
     history = []
 
     for ep in range(1, tcfg["epochs"] + 1):
-      sampler = getattr(train_loader, "batch_sampler", None)
-      if hasattr(sampler, "set_epoch"):
-          sampler.set_epoch(ep)
+        sampler = getattr(train_loader, "batch_sampler", None)
+        if hasattr(sampler, "set_epoch"):
+            sampler.set_epoch(ep)
 
-      tl = train_epoch(
-          model, train_loader, optim, device, warmup,
-          tcfg["max_grad_norm"], step_fn, cost_bps=cost_bps, scheduler=scheduler
-      )
-      vs = eval_epoch(
-          model, val_loader, device, warmup, eval_step_fn, cost_bps=cost_bps
-      )
+        tl = train_epoch(
+            model, train_loader, optim, device, warmup,
+            tcfg["max_grad_norm"], step_fn, cost_bps=cost_bps, scheduler=scheduler
+        )
+        vs = eval_epoch(
+            model, val_loader, device, warmup, eval_step_fn, cost_bps=cost_bps
+        )
 
-      cur_lr = scheduler.get_last_lr()[0]
-      row = {
-          "epoch": ep,
-          "train_loss": tl,
-          "val_loss": vs["loss"],
-          "val_sharpe": vs["net_sharpe"],          # selection metric
-          "val_sharpe_gross": vs["sharpe"],
-          "val_sharpe_net": vs["net_sharpe"],
-          "val_mdd": vs["net_max_drawdown"],       # selection metric
-          "val_mdd_gross": vs["max_drawdown"],
-          "val_mdd_net": vs["net_max_drawdown"],
-          "val_turnover": vs["avg_turnover"],
-          "lr": cur_lr,
-      }
-      history.append(row)
-      print(
-          f"Ep {ep:03d} | trn {tl:.4f} | val {vs['loss']:.4f} | "
-          f"gross {vs['sharpe']:.4f} | net {vs['net_sharpe']:.4f} | "
-          f"to {vs['avg_turnover']:.4f} | lr {cur_lr:.2e}"
-      )
+        cur_lr = scheduler.get_last_lr()[0]
+        is_best = vs["net_sharpe"] > best_sharpe + 1e-4
 
-      if vs["net_sharpe"] > best_sharpe + 1e-4:
-          best_sharpe = vs["net_sharpe"]
-          best_state = copy.deepcopy(model.state_dict())
-          wait = 0
-      else:
-          wait += 1
-          if wait >= tcfg["patience"]:
-              print(f"Early stop at epoch {ep}")
-              break
+        row = {
+            "epoch": ep,
+            "train_loss": tl,
+            "val_loss": vs["loss"],
+            "val_sharpe": vs["net_sharpe"],
+            "val_sharpe_gross": vs["gross_sharpe"],
+            "val_sharpe_net": vs["net_sharpe"],
+            "val_mdd": vs["net_max_drawdown"],
+            "val_mdd_gross": vs["gross_max_drawdown"],
+            "val_mdd_net": vs["net_max_drawdown"],
+            "val_turnover": vs["avg_turnover"],
+            "lr": cur_lr,
+            "is_checkpoint_best": bool(is_best),
+        }
+        history.append(row)
+
+        print(
+            f"Ep {ep:03d} | trn {tl:.4f} | val {vs['loss']:.4f} | "
+            f"gross {vs['gross_sharpe']:.4f} | net {vs['net_sharpe']:.4f} | "
+            f"to {vs['avg_turnover']:.4f} | lr {cur_lr:.2e}"
+        )
+
+        if is_best:
+            best_sharpe = vs["net_sharpe"]
+            best_state = copy.deepcopy(model.state_dict())
+            wait = 0
+        else:
+            wait += 1
+            if wait >= tcfg["patience"]:
+                print(f"Early stop at epoch {ep}")
+                break
 
     model.load_state_dict(best_state)
     return model, pd.DataFrame(history)
+
 
