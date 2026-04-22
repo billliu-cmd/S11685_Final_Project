@@ -147,31 +147,40 @@ class CrossSectionBlock(nn.Module):
         self.drop = nn.Dropout(dropout)
 
     def forward(self, target_h, peer_h, peer_mask=None):
-        # target_h: [B, T, H]
-        # peer_h:   [B, N, T, H]
-        B, N, T, H = peer_h.shape
-
-        # Attend across assets at each fixed time step.
-        peer_tokens = peer_h.permute(0, 2, 1, 3).reshape(B * T, N, H)
-
-        key_padding_mask = None
-        if peer_mask is not None:
-            key_padding_mask = ~peer_mask[:, None, :].expand(B, T, N).reshape(B * T, N)
-
-        peer_attn, _ = self.peer_self_attn(
-            peer_tokens, peer_tokens, peer_tokens,
-            key_padding_mask=key_padding_mask
-        )
-        peer_ctx = self.peer_attn_norm(peer_tokens + self.drop(peer_attn))
-        peer_ctx = self.peer_ffn_norm(peer_ctx + self.drop(self.peer_ffn(peer_ctx)))
-
-        q = target_h.reshape(B * T, 1, H)
-        cross_out, _ = self.target_cross_attn(
-            q, peer_ctx, peer_ctx,
-            key_padding_mask=key_padding_mask
-        )
-        cross_ctx = self.cross_attn_norm(q + self.drop(cross_out))
-        cross_ctx = self.cross_ffn_norm(cross_ctx + self.drop(self.cross_ffn(cross_ctx)))
-
-        return cross_ctx.reshape(B, T, H)
-
+      """
+      target_h: [B, T, H]
+      peer_h:   [B, N, T, H]
+      returns:  [B, T, H]
+      """
+      B, N, T, H = peer_h.shape
+  
+      # Pool peers to one vector per peer, matching X-Trend's context style.
+      peer_pool = peer_h[:, :, -1, :]                              # [B, N, H]
+  
+      # Use the target endpoint as the anchor so peers represent deviation
+      # from the target, not the common market mode.
+      target_end = target_h[:, -1, :]                               # [B, H]
+      peer_rel = peer_pool - target_end.unsqueeze(1)                # [B, N, H]
+  
+      key_padding_mask = None
+      if peer_mask is not None:
+          key_padding_mask = ~peer_mask                              # [B, N]
+  
+      # Self-attention across peers, once per batch.
+      peer_attn, _ = self.peer_self_attn(
+          peer_rel, peer_rel, peer_rel,
+          key_padding_mask=key_padding_mask,
+      )
+      peer_ctx = self.peer_attn_norm(peer_rel + self.drop(peer_attn))
+      peer_ctx = self.peer_ffn_norm(peer_ctx + self.drop(self.peer_ffn(peer_ctx)))
+  
+      # Each target timestep attends over the pooled peer set.
+      cross_out, _ = self.target_cross_attn(
+          target_h, peer_ctx, peer_ctx,
+          key_padding_mask=key_padding_mask,
+      )
+      cross_ctx = self.cross_attn_norm(target_h + self.drop(cross_out))
+      cross_ctx = self.cross_ffn_norm(cross_ctx + self.drop(self.cross_ffn(cross_ctx)))
+  
+      return cross_ctx                                              # [B, T, H]
+  
