@@ -73,18 +73,24 @@ class XTrendCS(XTrend):
                     
 # Extension 2: lead-lag
 class XTrendLL(XTrend):
+    """
+    Causal default lead-lag model.
+    """
     def __init__(self, input_dim, num_assets, cfg=None, lag_topk_mask=None):
         super().__init__(input_dim, num_assets, cfg)
         hid = self.cfg["hidden_dim"]
 
         ll_dropout = max(self.cfg["dropout"] * 2.5, 0.25)
-        self.ll_block = LeadLagBlock(
-            hid,
-            lag_steps=self.cfg.get("lead_lags", (1, 5, 21)),
-            num_heads=self.cfg["num_heads"],
+        self.ll_block = LagAwarePeerBlock(
+            hid=hid,
             dropout=ll_dropout,
-            include_delta_tokens=self.cfg.get("ll_use_delta_tokens", False),
-            lag_topk_mask=lag_topk_mask
+            lag_set=self.cfg.get("lead_lags", (1, 5, 21)),
+            top_k=self.cfg.get("ll_top_k", 3),
+            rank_strength=None,
+            rank_topk_mask=lag_topk_mask,
+            use_bennett=False,
+            alpha_init=self.cfg.get("ll_alpha_init", 0.1),
+            use_delta_value=False,
         )
 
         self.ll_proj = nn.Linear(hid, hid)
@@ -114,7 +120,10 @@ class XTrendLL(XTrend):
         enc_y = reg_y
         if peer_x is not None and peer_id is not None:
             peer_h = self.encode_peers(peer_x, peer_id)
-            ll_y = self.ll_block(q, target_id, peer_h, peer_id, peer_mask)
+            ll_y = self.ll_block(
+                q, peer_h, peer_mask,
+                target_id=target_id, peer_id=peer_id,
+            )
             ll_delta = self.ll_proj(ll_y)
             ll_alpha = torch.sigmoid(self.ll_gate(torch.cat([reg_y, ll_y], dim=-1)))
             enc_y = reg_y + ll_alpha * ll_delta
@@ -122,8 +131,10 @@ class XTrendLL(XTrend):
         dec_out = self.decoder(target_x, target_id, enc_y)
         return torch.tanh(self.head(dec_out)).squeeze(-1)
 
+
 # Extension 3: Cross-section + Lead-lag
 class XTrendCSLL(XTrend):
+    # Legacy exploratory CS+LL model.
     def __init__(self, input_dim, num_assets, cfg=None, lag_topk_mask=None):
         super().__init__(input_dim, num_assets, cfg)
         hid = self.cfg["hidden_dim"]
