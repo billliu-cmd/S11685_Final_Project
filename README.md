@@ -125,7 +125,7 @@ pip install torch
 ```
 
 ## 6. How to reproduce
-
+Follow the final ablation at `XTrend_final_rigorous_ablation.ipynb`
 
 ## 7. Repo layout
 
