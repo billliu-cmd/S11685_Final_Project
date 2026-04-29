@@ -119,16 +119,9 @@ Best learned model is **XTrendCSLL-A4**.
 git clone https://github.com/billliu-cmd/S11685_Final_Project.git
 cd S11685_Final_Project
 
-# (recommended) fresh environment
-python -m venv .venv && source .venv/bin/activate
-
 # core dependencies
 pip install -r requirements.txt
-
-# PyTorch is intentionally NOT pinned in requirements.txt — install the wheel
-# that matches your runtime (CPU / local CUDA / Colab GPU). For example:
-pip install torch          # CPU
-# or follow https://pytorch.org/get-started/locally/ for CUDA wheels
+pip install torch  
 ```
 
 ## 6. How to reproduce
