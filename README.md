@@ -64,7 +64,7 @@ on the same chronological split, cost assumption, and metrics:
 | Fixed Income & Credit | TLT, IEF, SHY, LQD, HYG | 5 |
 | Real Estate / Commodities / FX | VNQ, GLD, DBC, UUP | 4 |
 
-- **Frequency:** daily, 2005–2025 (aligned panel starts after the latest ETF
+- **Frequency:** daily, 2007–2025 (aligned panel starts after the latest ETF
   inception + feature warmup).
 - **Chronological split:** 3297 train / 707 validation / 707 test trading days.
 - **Inputs (per asset, daily):** five volatility-scaled returns at horizons
@@ -138,9 +138,9 @@ S11685_Final_Project/
 ├── config.py                 # Hyperparameters, feature spec, default ETF list
 │
 ├── data.py                   # Yahoo download + feature/target construction
-├── data2.py                  # Episode/peer window assembly for X-Trend variants
+├── data2.py                  # Episode/peer window assembly for X-Trend variants (Legacy Experiement)
 ├── cpd.py                    # Change-point detection for regime segmentation
-├── jump_model.py             # Jump-model regime helper used by CPD
+├── jump_model.py             # Jump-model regime helper used by CPD (Legacy Experiement)
 │
 ├── components.py             # Shared blocks: TemporalBlock, VSN, Self/CrossAttention,
 │                             #   DecoderBlock, CrossSectionBlock, gated residual fusion
@@ -161,8 +161,8 @@ S11685_Final_Project/
 │   └── training_curves.png
 │
 ├── Baselin_training_hidden_64.ipynb     # H=64 baseline ablation
-├── Baseline_training_hidden_128.ipynb   # H=128 baseline ablation
-└── data_format_comparison.ipynb         # Input format diagnostics
+├── XTrend_final_rigorous_ablation.ipynb   # H=96 C=15 Final Ablation
+└── data_format_comparison.ipynb         # Input format diagnostics (Helper File)
 ```
 
 ## 8. Known limitations
