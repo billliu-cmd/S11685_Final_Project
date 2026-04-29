@@ -180,6 +180,7 @@ class CrossSectionBlock(nn.Module):
 
         return cross_ctx.squeeze(1).reshape(B, T, H)
 
+# "Legacy lag block used by earlier exploratory models; final A2/A3/A4 experiments useLagAwarePeerBlock in lag_blocks.py
 class LeadLagBlock(nn.Module):
     """
     Build lagged peer tokens and let the current target sequence attend to them.

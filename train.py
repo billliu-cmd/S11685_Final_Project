@@ -99,13 +99,9 @@ def _baseline_step(model, batch, device, warmup, cost_bps=None):
     if cost_bps is None:
       cost_bps = TRAIN["cost_bps"]
     x   = batch["x"].to(device)
-    y   = batch["y"].to(device)       # scalar per sample
+    y   = batch["y"].to(device) 
     sid = batch["sid"].to(device)
     pos = model(x, sid)               # [B,T]
-
-    # baseline dataset gives scalar y; expand to match warm-up slicing
-    # The target_return at the endpoint of each window is replicated
-    # across time-steps so the Sharpe loss operates on the full sequence.
   
     loss = sharpe_loss_tc(pos, y, warmup, cost_bps=cost_bps)
     return loss, pos, y, batch["date"], batch["ticker"]

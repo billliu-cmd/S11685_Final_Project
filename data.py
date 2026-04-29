@@ -173,8 +173,6 @@ def time_split(panel: pd.DataFrame, train_frac=0.70, val_frac=0.15):
 # 3.  Baseline window dataset
 # ═══════════════════════════════════════════════════════════════════════════════
 class WindowDataset(Dataset):
-    """Each sample: [lookback, F] features  →  scalar target_return at endpoint."""
-
     def __init__(self, panel: pd.DataFrame, feature_cols: Sequence[str],
                  dates: Sequence[pd.Timestamp], lookback: int = 126):
         self.fcols = list(feature_cols)
@@ -208,7 +206,7 @@ class WindowDataset(Dataset):
         start = end - self.lb + 1
         return {
             "x":     frame["x"][start:end+1],                          # [T,F]
-            "y":     frame["y"][start:end+1],                          # scalar
+            "y":     frame["y"][start:end+1],
             "sid":   torch.tensor(frame["asset_id"], dtype=torch.long),
             "date":  frame["dates"][end].strftime("%Y-%m-%d"),
             "ticker": tk,

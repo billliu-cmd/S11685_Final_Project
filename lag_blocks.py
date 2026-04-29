@@ -8,6 +8,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
+# Current Lead Lag Block used in final Ablation.
 class LagAwarePeerBlock(nn.Module):
     """
     Custom lag-aware peer attention over (peer, lag) candidates.
