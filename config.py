@@ -9,44 +9,12 @@ EPS = 1e-8
 
 # default ETF universe
 DEFAULT_TICKERS = [
-    # US Broad Equity
-    "SPY", "QQQ", "IWM", "VTI", "MDY",
-
-    # US Sectors
-    "XLF", "XLE", "XLK", "XLI", "XLP", "XLV", "XLB", "XLU", "XLY", "KRE",
-
-    # US Thematic
-    "XOP", "XBI",
-
-    # US Style Factors
-    "VUG", "VTV",
-
-    # Real Estate
-    "VNQ",
-
-    # International Broad
+    "SPY", "QQQ", "IWM", "VTI",
     "EFA", "EEM",
-
-    # International Single-Country
-    "EWJ", "EWG", "EWU", "EWC", "EWA", "EWZ", "EWW", "EWT", "EWS",
-
-    # Government Bonds
-    "TLT", "IEF", "SHY",
-
-    # Credit & Aggregate
-    "AGG", "LQD", "HYG", "PFF",
-
-    # Inflation-Linked
-    "TIP",
-
-    # Commodities
-    "GLD", "SLV", "DBC", "USO", "DBA",
-
-    # Currency / FX
-    "UUP", "FXE", "FXY",
-
-    # Other / Diversifier
-    "DIA", "FXI", "SMH",
+    "XLF", "XLE", "XLK", "XLI", "XLP", "XLV",
+    "VNQ",
+    "TLT", "IEF", "SHY", "LQD", "HYG",
+    "GLD", "DBC", "UUP",
 ]
 
 
@@ -58,13 +26,13 @@ DATA = {
     "val_frac":    0.15,           # 15% val, remaining 15% test
     "lookback":    126,            # l_t : target sequence length (≈6 months)
     "context_len": 21,             # l_c : context sequence length (≈1 month)
-    "num_context": 10,             # |C| : number of context sequences per episode
+    "num_context": 15,             # |C| : number of context sequences per episode
     "batch_size":  64,
     "seed":        42,
 }
 
 MODEL = {
-    "hidden_dim":   128,            # LSTM / attention hidden size; was 64 for Run 1
+    "hidden_dim":   96,            # LSTM / attention hidden size; optimal based on ablations
     "num_heads":    4,             # attention heads in X-Trend
     "dropout":      0.1,
     "warmup_steps": 63,            # l_s : ignore first 63 predictions in Sharpe loss
@@ -72,9 +40,9 @@ MODEL = {
     "ll_use_delta_tokens": False,
     "ll_top_k": 3,
     "ll_alpha_init": 0.1,
-    "ll_use_bennett": False,
-    "ll_use_rank_mask": False,
-    "ll_use_delta_value": False,
+    "ll_use_bennett": True,
+    "ll_use_rank_mask": True,
+    "ll_use_delta_value": True,
 }
 
 TRAIN = {
